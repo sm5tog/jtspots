@@ -10,7 +10,10 @@ import urllib.request
 import urllib.parse
 import urllib.error
 from datetime import datetime, timezone
+from pathlib import Path
 import customtkinter as ctk
+
+SETTINGS_FILE = Path.home() / '.jtspots_settings.json'
 
 WSJTX_MAGIC = 0xADBCCBDA
 MSG_STATUS  = 1
@@ -332,6 +335,8 @@ class JTSpots(ctk.CTk):
         self._clublog    = ClublogClient()
 
         self._build_ui()
+        self._load_settings()
+        self.protocol('WM_DELETE_WINDOW', self._on_close)
         self.after(2000, self._tick)
         self.after(100, self._start)   # autostart
 
@@ -438,6 +443,11 @@ class JTSpots(ctk.CTk):
         return var
 
     # ── Start / Stop ──────────────────────────────────────────────────────────
+
+    def _on_close(self):
+        self._save_settings()
+        self._stop()
+        self.destroy()
 
     def _toggle(self):
         if self._running:
@@ -568,6 +578,46 @@ class JTSpots(ctk.CTk):
         self._log.delete('1.0', 'end')
         self._log.configure(state='disabled')
         self._spot_count = 0
+
+    def _save_settings(self):
+        data = {
+            'mcast':    self._e_mcast.get(),
+            'uport':    self._e_uport.get(),
+            'tport':    self._e_tport.get(),
+            'callsign': self._e_call.get(),
+            'cl_api':   self._e_cl_api.get(),
+            'cl_email': self._e_cl_email.get(),
+            'cl_pass':  self._e_cl_pass.get(),
+            'flt_cq':   self._flt_cq.get(),
+            'flt_snr':  self._flt_snr.get(),
+            'snr':      self._e_snr.get(),
+            'flt_clublog': self._flt_clublog.get(),
+        }
+        try:
+            SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        except Exception:
+            pass
+
+    def _load_settings(self):
+        try:
+            data = json.loads(SETTINGS_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            return
+        def set_entry(e, key):
+            if key in data:
+                e.delete(0, 'end')
+                e.insert(0, data[key])
+        set_entry(self._e_mcast,    'mcast')
+        set_entry(self._e_uport,    'uport')
+        set_entry(self._e_tport,    'tport')
+        set_entry(self._e_call,     'callsign')
+        set_entry(self._e_cl_api,   'cl_api')
+        set_entry(self._e_cl_email, 'cl_email')
+        set_entry(self._e_cl_pass,  'cl_pass')
+        set_entry(self._e_snr,      'snr')
+        if 'flt_cq'      in data: self._flt_cq.set(data['flt_cq'])
+        if 'flt_snr'     in data: self._flt_snr.set(data['flt_snr'])
+        if 'flt_clublog' in data: self._flt_clublog.set(data['flt_clublog'])
 
 
 # ── Start ─────────────────────────────────────────────────────────────────────
