@@ -158,8 +158,12 @@ class ClublogClient:
                 'mode':     0,
             })
             url = f'{self.MATRIX_URL}?{params}'
-            with urllib.request.urlopen(url, timeout=15) as r:
-                data = json.loads(r.read().decode())
+            req = urllib.request.Request(url, headers={'User-Agent': 'JTSpots/1.0'})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                raw = r.read().decode()
+            if not raw.strip().startswith('{'):
+                raise ValueError(f'Oväntat svar: {raw[:120]}')
+            data = json.loads(raw)
             with self._lock:
                 self._matrix      = data
                 self._dxcc_cache  = {}
@@ -167,9 +171,15 @@ class ClublogClient:
                 self.entity_count = len(data)
             if on_done:
                 on_done(True, f'{self.entity_count} enheter hämtade')
+        except urllib.error.HTTPError as e:
+            if on_done:
+                on_done(False, f'HTTP {e.code}: {e.reason}')
+        except urllib.error.URLError as e:
+            if on_done:
+                on_done(False, f'Nätverksfel: {e.reason}')
         except Exception as e:
             if on_done:
-                on_done(False, str(e))
+                on_done(False, f'{type(e).__name__}: {e}')
 
     def get_dxcc(self, callsign: str) -> str:
         """Returnerar ADIF-entitetsnummer som sträng, eller '' vid fel."""
