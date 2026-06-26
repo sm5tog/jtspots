@@ -502,8 +502,8 @@ class JTSpots(ctk.CTk):
 
     def _on_clublog_done(self, ok, msg):
         color = '#00cc44' if ok else '#cc4444'
-        self.after(0, self._lbl_cl_status.configure, {'text': msg, 'text_color': color})
-        self.after(0, self._log_line, f'Clublog: {msg}')
+        self.after(0, lambda: self._lbl_cl_status.configure(text=msg, text_color=color))
+        self.after(0, lambda: self._log_line(f'Clublog: {msg}'))
 
     # ── Pakethantering ────────────────────────────────────────────────────────
 
