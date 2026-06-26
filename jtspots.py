@@ -159,12 +159,12 @@ class ClublogClient:
                 'email':    self.email,
                 'password': self.password,
                 'mode':     0,
-            }).encode('utf-8')
-            req = urllib.request.Request(
-                self.MATRIX_URL,
-                data=params,
-                headers={'User-Agent': 'JTSpots/1.0',
-                         'Content-Type': 'application/x-www-form-urlencoded'})
+            })
+            url = f'{self.MATRIX_URL}?{params}'
+            debug_url = url.replace(self.password, '***').replace(self.api_key, '***')
+            if on_done:
+                on_done(None, f'Anropar: {debug_url}')
+            req = urllib.request.Request(url, headers={'User-Agent': 'JTSpots/1.0'})
             with urllib.request.urlopen(req, timeout=15) as r:
                 raw = r.read().decode()
             if not raw.strip().startswith('{'):
@@ -501,9 +501,11 @@ class JTSpots(ctk.CTk):
         self._clublog.fetch_matrix(on_done=self._on_clublog_done)
 
     def _on_clublog_done(self, ok, msg):
+        self.after(0, lambda: self._log_line(f'Clublog: {msg}'))
+        if ok is None:
+            return
         color = '#00cc44' if ok else '#cc4444'
         self.after(0, lambda: self._lbl_cl_status.configure(text=msg, text_color=color))
-        self.after(0, lambda: self._log_line(f'Clublog: {msg}'))
 
     # ── Pakethantering ────────────────────────────────────────────────────────
 
