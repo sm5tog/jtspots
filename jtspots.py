@@ -159,9 +159,12 @@ class ClublogClient:
                 'email':    self.email,
                 'password': self.password,
                 'mode':     0,
-            })
-            url = f'{self.MATRIX_URL}?{params}'
-            req = urllib.request.Request(url, headers={'User-Agent': 'JTSpots/1.0'})
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                self.MATRIX_URL,
+                data=params,
+                headers={'User-Agent': 'JTSpots/1.0',
+                         'Content-Type': 'application/x-www-form-urlencoded'})
             with urllib.request.urlopen(req, timeout=15) as r:
                 raw = r.read().decode()
             if not raw.strip().startswith('{'):
