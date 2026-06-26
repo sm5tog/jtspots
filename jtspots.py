@@ -357,7 +357,7 @@ class JTWatch(ctk.CTk):
     def _emit_spot(self, call, freq_khz, snr, mode):
         de   = self._e_call.get().strip() or 'JTWatch'
         utc  = datetime.now(timezone.utc).strftime('%H%MZ')
-        line = (f'DX de {de:<10} {freq_khz:>9.1f}  {call:<13} '
+        line = (f'DX de {de + ":":<11}{freq_khz:>9.1f}  {call:<13} '
                 f'{mode} {snr:+d}dB                {utc}')
         self._telnet.send_spot(line)
         self._spot_count += 1
