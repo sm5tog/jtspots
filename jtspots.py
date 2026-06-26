@@ -369,7 +369,7 @@ class JTWatch(ctk.CTk):
         self._emit_spot(callsign, freq_khz, snr, mode)
 
     def _emit_spot(self, call, freq_khz, snr, mode):
-        if not mode:
+        if not mode or mode == '~':
             mode = mode_from_freq(freq_khz)
         de   = self._e_call.get().strip() or 'JTWatch'
         utc  = datetime.now(timezone.utc).strftime('%H%MZ')
