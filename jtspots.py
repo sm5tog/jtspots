@@ -92,10 +92,10 @@ _FT4_FREQS = {3575, 7047, 14080, 18104, 21140, 24919, 28180, 50318}
 def mode_from_freq(freq_khz: float) -> str:
     khz = round(freq_khz)
     for f in _FT8_FREQS:
-        if abs(khz - f) <= 2:
+        if abs(khz - f) <= 5:
             return 'FT8'
     for f in _FT4_FREQS:
-        if abs(khz - f) <= 2:
+        if abs(khz - f) <= 5:
             return 'FT4'
     return ''
 
