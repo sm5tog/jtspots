@@ -425,6 +425,7 @@ class JTSpots(ctk.CTk):
 
         self._log = ctk.CTkTextbox(lf, font=('Courier', 11), state='disabled')
         self._log.pack(fill='both', expand=True, padx=8, pady=(0, 8))
+        self._log._textbox.tag_config('alert', foreground='#ffcc00')
 
     def _mk_label(self, parent, text, row, col):
         ctk.CTkLabel(parent, text=text).grid(
@@ -554,7 +555,7 @@ class JTSpots(ctk.CTk):
                 f'{comment:<20} {utc}')
         self._telnet.send_spot(line)
         self._spot_count += 1
-        self.after(0, self._log_line, line)
+        self.after(0, lambda l=line, r=reason: self._log_line(l, alert=bool(r)))
 
     # ── Hjälpfunktioner ───────────────────────────────────────────────────────
 
@@ -566,10 +567,15 @@ class JTSpots(ctk.CTk):
         self._lbl_count.configure(text=f'{self._spot_count} spots')
         self.after(2000, self._tick)
 
-    def _log_line(self, text):
+    def _log_line(self, text, alert=False):
         ts = datetime.now().strftime('%H:%M:%S')
         self._log.configure(state='normal')
-        self._log.insert('end', f'{ts}  {text}\n')
+        line = f'{ts}  {text}\n'
+        self._log.insert('end', line)
+        if alert:
+            end = self._log._textbox.index('end-1c')
+            start = f'{end} linestart'
+            self._log._textbox.tag_add('alert', start, end)
         self._log.see('end')
         self._log.configure(state='disabled')
 
