@@ -155,6 +155,7 @@ class ClublogClient:
         try:
             params = urllib.parse.urlencode({
                 'call':     self.callsign,
+                'api':      self.password,
                 'email':    self.email,
                 'password': self.password,
                 'mode':     0,
