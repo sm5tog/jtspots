@@ -86,6 +86,20 @@ _CQ_RE = re.compile(
     re.IGNORECASE
 )
 
+_FT8_FREQS = {1840, 3573, 5357, 7074, 10136, 14074, 18100, 21074, 24915, 28074, 50313, 50323, 144174}
+_FT4_FREQS = {3575, 7047, 14080, 18104, 21140, 24919, 28180, 50318}
+
+def mode_from_freq(freq_khz: float) -> str:
+    khz = round(freq_khz)
+    for f in _FT8_FREQS:
+        if abs(khz - f) <= 2:
+            return 'FT8'
+    for f in _FT4_FREQS:
+        if abs(khz - f) <= 2:
+            return 'FT4'
+    return ''
+
+
 def extract_cq_call(msg: str):
     m = _CQ_RE.match(msg.strip())
     return m.group(1).upper() if m else None
@@ -355,6 +369,8 @@ class JTWatch(ctk.CTk):
         self._emit_spot(callsign, freq_khz, snr, mode)
 
     def _emit_spot(self, call, freq_khz, snr, mode):
+        if not mode:
+            mode = mode_from_freq(freq_khz)
         de   = self._e_call.get().strip() or 'JTWatch'
         utc  = datetime.now(timezone.utc).strftime('%H%MZ')
         line = (f'DX de {de + ":":<11}{freq_khz:>9.1f}  {call:<13} '
