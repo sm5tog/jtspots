@@ -155,7 +155,7 @@ class ClublogClient:
         try:
             params = urllib.parse.urlencode({
                 'call':     self.callsign,
-                'api':      self.password,
+                'api':      self.api_key,
                 'email':    self.email,
                 'password': self.password,
                 'mode':     0,
@@ -387,9 +387,13 @@ class JTSpots(ctk.CTk):
         self._mk_label(cf, 'E-post:', 1, 0)
         self._e_cl_email = self._mk_entry(cf, '', 1, 1, 200)
 
-        self._mk_label(cf, 'App Password:', 2, 0)
+        self._mk_label(cf, 'Lösenord:', 2, 0)
         self._e_cl_pass = ctk.CTkEntry(cf, width=200, show='*')
         self._e_cl_pass.grid(row=2, column=1, sticky='w', padx=4, pady=3)
+
+        self._mk_label(cf, 'API-nyckel:', 3, 0)
+        self._e_cl_api = ctk.CTkEntry(cf, width=200, show='*')
+        self._e_cl_api.grid(row=3, column=1, sticky='w', padx=4, pady=3)
 
         btn_row = ctk.CTkFrame(cf, fg_color='transparent')
         btn_row.grid(row=4, column=0, columnspan=4, sticky='w', padx=6, pady=(2, 6))
@@ -491,6 +495,7 @@ class JTSpots(ctk.CTk):
 
     def _fetch_clublog(self):
         self._clublog.email     = self._e_cl_email.get().strip()
+        self._clublog.api_key   = self._e_cl_api.get().strip()
         self._clublog.password  = self._e_cl_pass.get()
         self._clublog.callsign  = self._e_call.get().strip()
         self._lbl_cl_status.configure(text='Hämtar...', text_color='gray')
@@ -593,6 +598,7 @@ class JTSpots(ctk.CTk):
             'tport':    self._e_tport.get(),
             'callsign': self._e_call.get(),
             'cl_email': self._e_cl_email.get(),
+            'cl_api':   self._e_cl_api.get(),
             'cl_pass':  self._e_cl_pass.get(),
             'flt_cq':   self._flt_cq.get(),
             'flt_snr':  self._flt_snr.get(),
@@ -618,6 +624,7 @@ class JTSpots(ctk.CTk):
         set_entry(self._e_tport,    'tport')
         set_entry(self._e_call,     'callsign')
         set_entry(self._e_cl_email, 'cl_email')
+        set_entry(self._e_cl_api,   'cl_api')
         set_entry(self._e_cl_pass,  'cl_pass')
         set_entry(self._e_snr,      'snr')
         if 'flt_cq'      in data: self._flt_cq.set(data['flt_cq'])
