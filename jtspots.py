@@ -160,7 +160,7 @@ class ClublogClient:
                 'mode':     0,
             })
             url = f'{self.MATRIX_URL}?{params}'
-            debug_url = url.replace(self.password, '***').replace(self.api_key, '***')
+            debug_url = re.sub(r'(password=)[^&]+', r'\1***', url)
             if on_done:
                 on_done(None, f'Anropar: {debug_url}')
             req = urllib.request.Request(url, headers={'User-Agent': 'JTSpots/1.0'})
