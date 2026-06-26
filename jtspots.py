@@ -491,7 +491,7 @@ class JTSpots(ctk.CTk):
     def _fetch_clublog(self):
         self._clublog.email    = self._e_cl_email.get().strip()
         self._clublog.api_key  = self._e_cl_api.get().strip()
-        self._clublog.password  = self._e_cl_pass.get()
+        self._clublog.password  = ''
         self._clublog.callsign  = self._e_call.get().strip()
         self._lbl_cl_status.configure(text='Hämtar...', text_color='gray')
         self._clublog.fetch_matrix(on_done=self._on_clublog_done)
@@ -594,7 +594,6 @@ class JTSpots(ctk.CTk):
             'callsign': self._e_call.get(),
             'cl_email': self._e_cl_email.get(),
             'cl_api':   self._e_cl_api.get(),
-            'cl_pass':  self._e_cl_pass.get(),
             'flt_cq':   self._flt_cq.get(),
             'flt_snr':  self._flt_snr.get(),
             'snr':      self._e_snr.get(),
@@ -620,7 +619,6 @@ class JTSpots(ctk.CTk):
         set_entry(self._e_call,     'callsign')
         set_entry(self._e_cl_email, 'cl_email')
         set_entry(self._e_cl_api,   'cl_api')
-        set_entry(self._e_cl_pass,  'cl_pass')
         set_entry(self._e_snr,      'snr')
         if 'flt_cq'      in data: self._flt_cq.set(data['flt_cq'])
         if 'flt_snr'     in data: self._flt_snr.set(data['flt_snr'])
