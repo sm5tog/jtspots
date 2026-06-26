@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import customtkinter as ctk
 
-SETTINGS_FILE = Path.home() / '.jtspots_settings.json'
+SETTINGS_FILE = Path(__file__).parent / 'jtspots_settings.json'
 
 WSJTX_MAGIC = 0xADBCCBDA
 MSG_STATUS  = 1
