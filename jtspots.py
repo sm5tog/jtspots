@@ -133,7 +133,7 @@ def extract_cq_call(msg: str):
 # ── Clublog-klient ───────────────────────────────────────────────────────────
 
 class ClublogClient:
-    MATRIX_URL = 'https://secure.clublog.org/json_dxccchart.php'
+    MATRIX_URL = 'https://clublog.org/json_dxccchart.php'
     DXCC_URL   = 'https://secure.clublog.org/dxcc'
 
     def __init__(self):
