@@ -539,8 +539,9 @@ class RuleEngine:
             needed, _ = self._clublog.is_needed(call, freq_khz, key='normal')
             return needed
         if t == 'sat_needed':
-            needed, _ = self._clublog.is_needed(call, freq_khz, key='sat')
-            return needed
+            # Sat-matrisen trackar bara om entiteten är körd, inte per band
+            _, reason = self._clublog.is_needed(call, freq_khz, key='sat')
+            return reason == 'ATNO'
         if t == 'marathon':
             val = cond.get('value', 'band')
             if val == 'any':
