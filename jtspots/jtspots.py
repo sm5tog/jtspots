@@ -16,6 +16,7 @@ import customtkinter as ctk
 
 SETTINGS_FILE   = Path(__file__).parent / 'jtspots_settings.json'
 MATRIX_CACHE    = Path(__file__).parent / 'jtspots_matrix_cache.json'
+EXPEDITION_LOG  = Path(__file__).parent / 'jtspots_expedition_log.json'
 
 from jtspots_collect import fetch_dx_news
 
@@ -23,9 +24,10 @@ WSJTX_MAGIC = 0xADBCCBDA
 MSG_STATUS  = 1
 MSG_DECODE  = 2
 
-DEFAULT_MCAST = "224.0.0.1"
-DEFAULT_UPORT = 2237
-DEFAULT_TPORT = 7300
+DEFAULT_MCAST     = "224.0.0.1"
+DEFAULT_UPORT     = 2237
+DEFAULT_TPORT     = 7300
+DEFAULT_ADIF_PORT = 12030
 
 # ── QDataStream reader ──────────────────────────────────────────────────────
 
@@ -432,6 +434,7 @@ COND_TYPES = {
     'snr':              'Min SNR (dB)',
     'spotter_cont':     'Spotter kontinent',
     'spotter_dxcc':     'Spotter land (prefix, kommasep.)',
+    'expedition':       'Expedition (saknar band/mode)',
 }
 
 # Vilka villkorstyper kräver vilken matrisnyckel
@@ -502,8 +505,9 @@ def _spotter_prefix(call: str) -> str:
     return c[:2]
 
 class RuleEngine:
-    def __init__(self, clublog):
+    def __init__(self, clublog, exp_log=None):
         self._clublog = clublog
+        self._exp_log = exp_log
 
     def evaluate(self, call, freq_khz, snr, mode, rules, source='', spotter=''):
         """Returns (passed, rule_name). If no active rules: pass all."""
@@ -566,6 +570,11 @@ class RuleEngine:
                 return snr >= int(cond.get('value', '-99'))
             except ValueError:
                 return True
+        if t == 'expedition':
+            if not self._exp_log:
+                return False
+            band = freq_to_band(freq_khz)
+            return self._exp_log.is_needed(call, band, mode)
         return True
 
 
@@ -660,6 +669,121 @@ class ClusterClient:
             except Exception: pass
 
 
+# ── ADIF UDP-lyssnare ────────────────────────────────────────────────────────
+
+def _parse_adif_fields(data: str) -> dict:
+    """Returnerar dict med ADIF-fält (lowercase keys) från en ADIF-post."""
+    fields = {}
+    for m in re.finditer(r'<([^:>]+)(?::\d+(?::[^>]*)?)?>([^<]*)', data, re.IGNORECASE):
+        key = m.group(1).lower().strip()
+        val = m.group(2).strip()
+        if key and key != 'eor' and key != 'eoh':
+            fields[key] = val
+    return fields
+
+
+class AdifUdpListener:
+    def __init__(self, port: int, on_qso):
+        self._port   = port
+        self._on_qso = on_qso  # callback(fields: dict)
+        self._sock   = None
+        self._running = False
+
+    def start(self):
+        self._running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def stop(self):
+        self._running = False
+        if self._sock:
+            try: self._sock.close()
+            except Exception: pass
+
+    def _run(self):
+        try:
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._sock.bind(('', self._port))
+            self._sock.settimeout(1.0)
+            while self._running:
+                try:
+                    data, _ = self._sock.recvfrom(65535)
+                    text = data.decode('utf-8', errors='replace')
+                    fields = _parse_adif_fields(text)
+                    if fields.get('call') and self._on_qso:
+                        self._on_qso(fields)
+                except socket.timeout:
+                    pass
+        except Exception:
+            pass
+
+
+# ── Expeditionslogg ───────────────────────────────────────────────────────────
+
+class ExpeditionLog:
+    """Spårar körda band/moder per expeditionsanrop."""
+
+    def __init__(self):
+        self._log  = {}   # call -> {band -> set(modes)}
+        self._lock = threading.Lock()
+
+    def add_qso(self, call: str, band: str, mode: str):
+        call = call.upper().strip()
+        band = band.upper().strip()
+        mode = mode.upper().strip()
+        if not call or not band:
+            return
+        with self._lock:
+            if call not in self._log:
+                self._log[call] = {}
+            if band not in self._log[call]:
+                self._log[call][band] = set()
+            self._log[call][band].add(mode)
+
+    def is_needed(self, call: str, band: str, mode: str = '') -> bool:
+        """True om detta band/mode saknas för anropet."""
+        call = call.upper().strip()
+        band = band.upper().strip()
+        mode = mode.upper().strip()
+        with self._lock:
+            if call not in self._log:
+                return True
+            if band not in self._log[call]:
+                return True
+            if mode and mode not in self._log[call][band]:
+                return True
+            return False
+
+    def known_calls(self) -> set:
+        with self._lock:
+            return set(self._log.keys())
+
+    def summary(self, call: str) -> str:
+        call = call.upper().strip()
+        with self._lock:
+            entry = self._log.get(call, {})
+            parts = [f'{b}:{",".join(sorted(m))}' for b, m in sorted(entry.items())]
+            return ' '.join(parts) if parts else '(inget)'
+
+    def save(self, path):
+        with self._lock:
+            payload = {k: {b: sorted(m) for b, m in v.items()}
+                       for k, v in self._log.items()}
+        try:
+            Path(path).write_text(json.dumps(payload, indent=2), encoding='utf-8')
+        except Exception:
+            pass
+
+    def load(self, path):
+        try:
+            payload = json.loads(Path(path).read_text(encoding='utf-8'))
+        except Exception:
+            return
+        with self._lock:
+            self._log = {k: {b: set(m) for b, m in v.items()}
+                         for k, v in payload.items()}
+
+
 # ── Huvud-GUI ────────────────────────────────────────────────────────────────
 
 DEFAULT_INIT = '<CALLSIGN>\n<PASSWORD>\nSH/DX 30'
@@ -682,14 +806,17 @@ class JTSpots(ctk.CTk):
         self._spot_log      = []   # [{call, freq_khz, snr, mode, line, source}]
         self._clublog       = ClublogClient()
         self._buffer        = SpotBuffer()
-        self._engine        = RuleEngine(self._clublog)
+        self._exp_log       = ExpeditionLog()
+        self._engine        = RuleEngine(self._clublog, self._exp_log)
         self._clusters      = []    # list of ClusterClient
         self._cluster_cfgs  = []    # list of dicts (sparade servrar)
         self._selected_idx  = None  # vald server i listan
+        self._adif_listener = None
 
         self._build_ui()
         self._load_settings()
         self._clublog.load_cache(MATRIX_CACHE)
+        self._exp_log.load(EXPEDITION_LOG)
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self.after(2000, self._tick)
         self.after(100, self._start)
@@ -752,6 +879,9 @@ class JTSpots(ctk.CTk):
         self._e_tport = self._mk_entry(tab, str(DEFAULT_TPORT), 1, 1, 70)
         self._mk_label(tab, 'Mitt callsign:', 1, 2)
         self._e_call = self._mk_entry(tab, 'SM5K', 1, 3, 100)
+
+        self._mk_label(tab, 'ADIF UDP-port:', 2, 0)
+        self._e_adif_port = self._mk_entry(tab, str(DEFAULT_ADIF_PORT), 2, 1, 70)
 
     def _build_cluster_tab(self, tab):
         tab.columnconfigure(0, weight=1)
@@ -1137,6 +1267,7 @@ class JTSpots(ctk.CTk):
 
     def _on_close(self):
         self._save_settings()
+        self._exp_log.save(EXPEDITION_LOG)
         self._stop()
         for c in self._clusters:
             c.disconnect()
@@ -1163,6 +1294,14 @@ class JTSpots(ctk.CTk):
         self._udp = UDPListener(mcast, uport, self._on_packet)
         self._udp.start()
 
+        try:
+            adif_port = int(self._e_adif_port.get())
+            self._adif_listener = AdifUdpListener(adif_port, self._on_adif_qso)
+            self._adif_listener.start()
+            self._log_line(f'ADIF UDP lyssnar på port {adif_port}')
+        except Exception as e:
+            self._log_line(f'ADIF UDP fel: {e}')
+
         self._running = True
         self._dot.configure(text_color='#00cc44')
         self._lbl_status.configure(text='Aktiv')
@@ -1187,8 +1326,9 @@ class JTSpots(ctk.CTk):
                     break
 
     def _stop(self):
-        if self._udp:    self._udp.stop()
-        if self._telnet: self._telnet.stop()
+        if self._udp:            self._udp.stop()
+        if self._telnet:         self._telnet.stop()
+        if self._adif_listener:  self._adif_listener.stop(); self._adif_listener = None
         self._running = False
         self._dot.configure(text_color='gray')
         self._lbl_status.configure(text='Stoppad')
@@ -1353,6 +1493,20 @@ class JTSpots(ctk.CTk):
         if ok:
             self._clublog.save_cache(MATRIX_CACHE)
 
+    # ── ADIF QSO-hantering ───────────────────────────────────────────────────
+
+    def _on_adif_qso(self, fields):
+        call = fields.get('call', '').upper().strip()
+        band = fields.get('band', '').upper().strip()
+        mode = fields.get('mode', '').upper().strip()
+        if not call or not band:
+            return
+        known = self._exp_log.known_calls()
+        self._exp_log.add_qso(call, band, mode)
+        if call not in known:
+            self.after(0, lambda c=call: self._log_line(f'ADIF: ny expedition spårad — {c}'))
+        self._exp_log.save(EXPEDITION_LOG)
+
     # ── WSJT-X pakethantering ─────────────────────────────────────────────────
 
     def _on_packet(self, data):
@@ -1467,6 +1621,7 @@ class JTSpots(ctk.CTk):
             'mcast':       self._e_mcast.get(),
             'uport':       self._e_uport.get(),
             'tport':       self._e_tport.get(),
+            'adif_port':   self._e_adif_port.get(),
             'callsign':    self._e_call.get(),
             'cl_call':     self._e_cl_call.get(),
             'cl_email':    self._e_cl_email.get(),
@@ -1494,9 +1649,10 @@ class JTSpots(ctk.CTk):
                 e.delete(0, 'end')
                 e.insert(0, data[key])
 
-        se(self._e_mcast,    'mcast')
-        se(self._e_uport,    'uport')
-        se(self._e_tport,    'tport')
+        se(self._e_mcast,      'mcast')
+        se(self._e_uport,      'uport')
+        se(self._e_tport,      'tport')
+        se(self._e_adif_port,  'adif_port')
         se(self._e_call,     'callsign')
         se(self._e_cl_call,  'cl_call')
         se(self._e_cl_email, 'cl_email')
