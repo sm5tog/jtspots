@@ -17,6 +17,8 @@ import customtkinter as ctk
 SETTINGS_FILE   = Path(__file__).parent / 'jtspots_settings.json'
 MATRIX_CACHE    = Path(__file__).parent / 'jtspots_matrix_cache.json'
 
+from jtspots_collect import fetch_dx_news
+
 WSJTX_MAGIC = 0xADBCCBDA
 MSG_STATUS  = 1
 MSG_DECODE  = 2
@@ -532,6 +534,10 @@ class RuleEngine:
             needed, _ = self._clublog.is_needed(call, freq_khz, key='sat')
             return needed
         if t == 'marathon':
+            val = cond.get('value', 'band')
+            if val == 'any':
+                _, reason = self._clublog.is_needed(call, freq_khz, key='marathon')
+                return reason == 'ATNO'
             needed, _ = self._clublog.is_needed(call, freq_khz, key='marathon')
             return needed
         if t == 'wanted_call':
@@ -976,7 +982,7 @@ class JTSpots(ctk.CTk):
                 w.destroy()
             for i, cond in enumerate(working):
                 t   = cond.get('type', '')
-                lbl = COND_TYPES.get(t, t)
+                lbl = self._cond_label(t)
                 ctk.CTkLabel(cond_frame, text=lbl, anchor='w', width=190).grid(
                     row=i, column=0, sticky='nw', padx=4, pady=4)
 
@@ -999,6 +1005,15 @@ class JTSpots(ctk.CTk):
                 elif t == 'spotter_cont':
                     getter = make_checkbox_row(cond_frame, CONT_OPTIONS, selected, i)
                     value_getters.append((cond, getter))
+                elif t == 'marathon':
+                    seg_var = ctk.StringVar(value='any' if val == 'any' else 'band')
+                    ctk.CTkSegmentedButton(
+                        cond_frame,
+                        values=['any', 'band'],
+                        variable=seg_var,
+                        width=160,
+                    ).grid(row=i, column=1, sticky='w', padx=4, pady=4)
+                    value_getters.append((cond, seg_var.get))
                 elif t in ('wanted_call', 'not_call', 'snr', 'spotter_dxcc'):
                     cell = ctk.CTkFrame(cond_frame, fg_color='transparent')
                     cell.grid(row=i, column=1, sticky='ew', padx=4, pady=2)
@@ -1007,22 +1022,27 @@ class JTSpots(ctk.CTk):
                     e.insert(0, val)
                     e.grid(row=0, column=0, sticky='ew', pady=2)
                     if t == 'wanted_call':
-                        def _load_collect(entry=e, kind='union'):
-                            p = Path(r'c:/claude/collect') / f'calls_{kind}.txt'
-                            try:
-                                calls = [ln.strip() for ln in p.read_text(encoding='utf-8').splitlines() if ln.strip()]
-                                entry.delete(0, 'end')
-                                entry.insert(0, ','.join(calls))
-                            except Exception as ex:
-                                entry.delete(0, 'end')
-                                entry.insert(0, f'FEL: {ex}')
+                        lbl_fetch = ctk.CTkLabel(cell, text='', text_color='gray',
+                                                 font=ctk.CTkFont(size=10))
+                        lbl_fetch.grid(row=1, column=0, sticky='w')
+
+                        def _fetch_live(entry=e, lbl=lbl_fetch, kind='union'):
+                            lbl.configure(text='Hämtar...')
+                            def _done(union, specials, err):
+                                calls = union if kind == 'union' else specials
+                                self.after(0, lambda: entry.delete(0, 'end'))
+                                self.after(0, lambda: entry.insert(0, ','.join(sorted(calls))))
+                                msg = f'{len(calls)} anrop' + (f' (fel: {err})' if err else '')
+                                self.after(0, lambda m=msg: lbl.configure(text=m))
+                            fetch_dx_news(on_done=_done)
+
                         btn_row = ctk.CTkFrame(cell, fg_color='transparent')
-                        btn_row.grid(row=1, column=0, sticky='w')
+                        btn_row.grid(row=2, column=0, sticky='w')
                         ctk.CTkButton(btn_row, text='DX News Union', width=110,
-                                      command=lambda: _load_collect(e, 'union'),
+                                      command=lambda en=e, lb=lbl_fetch: _fetch_live(en, lb, 'union'),
                                       font=ctk.CTkFont(size=11)).pack(side='left', padx=(0, 4))
                         ctk.CTkButton(btn_row, text='DX News Special', width=118,
-                                      command=lambda: _load_collect(e, 'special'),
+                                      command=lambda en=e, lb=lbl_fetch: _fetch_live(en, lb, 'special'),
                                       font=ctk.CTkFont(size=11)).pack(side='left')
                     value_getters.append((cond, e.get))
                 else:
@@ -1283,6 +1303,16 @@ class JTSpots(ctk.CTk):
             self.after(0, lambda l=line: self._log_line(f'  {l}'))
 
     # ── Clublog ───────────────────────────────────────────────────────────────
+
+    def _cond_label(self, t):
+        key = COND_MATRIX_KEY.get(t)
+        if key:
+            ts = self._clublog.matrix_fetched_at(key)
+            base = COND_TYPES.get(t, t).split(' (')[0]
+            if ts:
+                return f'{base} {ts.strftime("%y%m%d %H:%M")}'
+            return f'{base} (ej hämtad)'
+        return COND_TYPES.get(t, t)
 
     def _fetch_clublog(self, key='normal', on_done=None):
         self._clublog.callsign = self._e_cl_call.get().strip()
