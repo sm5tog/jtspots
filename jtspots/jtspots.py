@@ -882,6 +882,9 @@ class JTSpots(ctk.CTk):
 
         self._mk_label(tab, 'ADIF UDP-port:', 2, 0)
         self._e_adif_port = self._mk_entry(tab, str(DEFAULT_ADIF_PORT), 2, 1, 70)
+        self._chk_adif = ctk.CTkCheckBox(tab, text='Aktivera ADIF UDP-lyssnare',
+                                          command=self._adif_toggle)
+        self._chk_adif.grid(row=3, column=0, columnspan=3, sticky='w', padx=8, pady=4)
 
     def _build_cluster_tab(self, tab):
         tab.columnconfigure(0, weight=1)
@@ -1294,14 +1297,6 @@ class JTSpots(ctk.CTk):
         self._udp = UDPListener(mcast, uport, self._on_packet)
         self._udp.start()
 
-        try:
-            adif_port = int(self._e_adif_port.get())
-            self._adif_listener = AdifUdpListener(adif_port, self._on_adif_qso)
-            self._adif_listener.start()
-            self._log_line(f'ADIF UDP lyssnar på port {adif_port}')
-        except Exception as e:
-            self._log_line(f'ADIF UDP fel: {e}')
-
         self._running = True
         self._dot.configure(text_color='#00cc44')
         self._lbl_status.configure(text='Aktiv')
@@ -1493,7 +1488,23 @@ class JTSpots(ctk.CTk):
         if ok:
             self._clublog.save_cache(MATRIX_CACHE)
 
-    # ── ADIF QSO-hantering ───────────────────────────────────────────────────
+    # ── ADIF UDP-toggle + QSO-hantering ─────────────────────────────────────
+
+    def _adif_toggle(self):
+        if self._chk_adif.get():
+            try:
+                port = int(self._e_adif_port.get())
+                self._adif_listener = AdifUdpListener(port, self._on_adif_qso)
+                self._adif_listener.start()
+                self._log_line(f'ADIF UDP aktiverad — lyssnar på port {port}')
+            except Exception as e:
+                self._log_line(f'ADIF UDP fel: {e}')
+                self._chk_adif.deselect()
+        else:
+            if self._adif_listener:
+                self._adif_listener.stop()
+                self._adif_listener = None
+            self._log_line('ADIF UDP inaktiverad')
 
     def _on_adif_qso(self, fields):
         call = fields.get('call', '').upper().strip()
@@ -1624,6 +1635,7 @@ class JTSpots(ctk.CTk):
             'uport':       self._e_uport.get(),
             'tport':       self._e_tport.get(),
             'adif_port':   self._e_adif_port.get(),
+            'adif_on':     bool(self._chk_adif.get()),
             'callsign':    self._e_call.get(),
             'cl_call':     self._e_cl_call.get(),
             'cl_email':    self._e_cl_email.get(),
@@ -1655,6 +1667,9 @@ class JTSpots(ctk.CTk):
         se(self._e_uport,      'uport')
         se(self._e_tport,      'tport')
         se(self._e_adif_port,  'adif_port')
+        if data.get('adif_on'):
+            self._chk_adif.select()
+            self._adif_toggle()
         se(self._e_call,     'callsign')
         se(self._e_cl_call,  'cl_call')
         se(self._e_cl_email, 'cl_email')
