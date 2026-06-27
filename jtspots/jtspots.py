@@ -1616,13 +1616,46 @@ class JTSpots(ctk.CTk):
             if self._buffer.is_duplicate(callsign, freq_to_band(freq_khz)):
                 return
 
-        passed, rule_name = self._engine.evaluate(callsign, freq_khz, snr, mode, self._rules, 'wsjt', self._e_call.get().strip())
-        if not passed:
-            return
+        # Bygg spot och visa i "Alla" direkt — filtret körs i bakgrund
+        if not mode or mode == '~':
+            mode = mode_from_freq(freq_khz)
+        de  = self._e_call.get().strip() or 'JTSpots'
+        utc = datetime.now(timezone.utc).strftime('%H%MZ')
+        line = (f'DX de {de + ":":<11}{freq_khz:>9.1f}  {callsign:<13} '
+                f'{mode:<20} {utc}')
+        spot = {'call': callsign, 'freq_khz': freq_khz, 'snr': snr,
+                'mode': mode, 'line': line, 'source': 'wsjt', 'spotter': de}
+        self.after(0, lambda s=spot: self._ingest_spot(s))
 
-        self._emit_spot(callsign, freq_khz, snr, mode, rule_name)
+    def _ingest_spot(self, spot):
+        self._spot_log.append(spot)
+        if len(self._spot_log) > 1000:
+            self._spot_log.pop(0)
+        self._spot_count += 1
+        self._log_line(spot['line'])
+
+        rules = list(self._rules)
+        def _eval():
+            passed, rule_name = self._engine.evaluate(
+                spot['call'], spot['freq_khz'], spot['snr'], spot['mode'],
+                rules, spot.get('source', ''), spot.get('spotter', ''))
+            if passed:
+                self.after(0, lambda: self._emit_filtered(spot, rule_name))
+        threading.Thread(target=_eval, daemon=True).start()
+
+    def _emit_filtered(self, spot, rule_name):
+        de  = self._e_call.get().strip() or 'JTSpots'
+        utc = datetime.now(timezone.utc).strftime('%H%MZ')
+        comment = f'{rule_name} {spot["mode"]} {spot["snr"]:+d}dB' if rule_name else f'{spot["mode"]} {spot["snr"]:+d}dB'
+        line = (f'DX de {de + ":":<11}{spot["freq_khz"]:>9.1f}  {spot["call"]:<13} '
+                f'{comment:<20} {utc}')
+        if self._telnet:
+            self._telnet.send_spot(line)
+        suffix = f' [{rule_name}]' if rule_name else ''
+        self._append_to_box(self._log_flt, line + suffix, tag='wsjt')
 
     def _emit_spot(self, call, freq_khz, snr, mode, rule_name=''):
+        """Används av kluster-spots som redan är filtrerade."""
         if not mode or mode == '~':
             mode = mode_from_freq(freq_khz)
         de      = self._e_call.get().strip() or 'JTSpots'
