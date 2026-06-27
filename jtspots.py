@@ -319,6 +319,31 @@ class UDPListener:
 
 # ── DX Cluster-klient (mot externa cluster) ───────────────────────────────────
 
+# ── Tidsbuffert ───────────────────────────────────────────────────────────────
+
+class SpotBuffer:
+    """Håller reda på nyligen sedda (callsign, band)-kombinationer."""
+
+    def __init__(self):
+        self._seen = {}   # {(call, band): timestamp}
+        self._lock = threading.Lock()
+        self.minutes = 10
+
+    def is_duplicate(self, call: str, band: str) -> bool:
+        key = (call, band)
+        now = time.monotonic()
+        with self._lock:
+            if key in self._seen:
+                if now - self._seen[key] < self.minutes * 60:
+                    return True
+            self._seen[key] = now
+            return False
+
+    def clear(self):
+        with self._lock:
+            self._seen.clear()
+
+
 class ClusterClient:
     def __init__(self, cfg: dict, on_spot, on_status):
         self._cfg       = cfg        # {name, host, port, callsign, password, init}
@@ -410,6 +435,7 @@ class JTSpots(ctk.CTk):
         self._telnet        = None
         self._spot_count    = 0
         self._clublog       = ClublogClient()
+        self._buffer        = SpotBuffer()
         self._clusters      = []    # list of ClusterClient
         self._cluster_cfgs  = []    # list of dicts (sparade servrar)
         self._selected_idx  = None  # vald server i listan
@@ -557,6 +583,11 @@ class JTSpots(ctk.CTk):
         self._flt_snr     = self._mk_chk(tab, 'Min SNR (dB):',               1, 0, False)
         self._e_snr       = self._mk_entry(tab, '-15', 1, 1, 55)
         self._flt_clublog = self._mk_chk(tab, 'Bara behövda (Clublog)',      2, 0, False)
+        self._flt_buf     = self._mk_chk(tab, 'Tidsbuffert (min):',          3, 0, True)
+        self._e_buf       = self._mk_entry(tab, '10', 3, 1, 55)
+        ctk.CTkButton(tab, text='Rensa buffert', width=110,
+                      command=self._buffer.clear).grid(
+            row=3, column=2, sticky='w', padx=8)
 
     # ── Hjälpwidgets ──────────────────────────────────────────────────────────
 
@@ -715,6 +746,11 @@ class JTSpots(ctk.CTk):
                 freq_khz = float(freq_str)
             except ValueError:
                 return
+            if self._flt_buf.get():
+                try: self._buffer.minutes = float(self._e_buf.get())
+                except ValueError: pass
+                if self._buffer.is_duplicate(call, freq_to_band(freq_khz)):
+                    return
             if self._flt_clublog.get():
                 needed, _ = self._clublog.is_needed(call, freq_khz)
                 if not needed:
@@ -774,6 +810,12 @@ class JTSpots(ctk.CTk):
                 pass
 
         freq_khz = (self._freq_hz + pkt.get('df', 0)) / 1000.0
+
+        if self._flt_buf.get():
+            try: self._buffer.minutes = float(self._e_buf.get())
+            except ValueError: pass
+            if self._buffer.is_duplicate(callsign, freq_to_band(freq_khz)):
+                return
 
         if self._flt_clublog.get():
             needed, reason = self._clublog.is_needed(callsign, freq_khz)
@@ -842,6 +884,8 @@ class JTSpots(ctk.CTk):
             'flt_snr':     self._flt_snr.get(),
             'snr':         self._e_snr.get(),
             'flt_clublog': self._flt_clublog.get(),
+            'flt_buf':     self._flt_buf.get(),
+            'buf_min':     self._e_buf.get(),
             'clusters':    self._cluster_cfgs,
         }
         try:
@@ -872,6 +916,8 @@ class JTSpots(ctk.CTk):
         if 'flt_cq'      in data: self._flt_cq.set(data['flt_cq'])
         if 'flt_snr'     in data: self._flt_snr.set(data['flt_snr'])
         if 'flt_clublog' in data: self._flt_clublog.set(data['flt_clublog'])
+        if 'flt_buf'     in data: self._flt_buf.set(data['flt_buf'])
+        se(self._e_buf, 'buf_min')
         if 'clusters'    in data:
             self._cluster_cfgs = data['clusters']
             self._refresh_cluster_list()
