@@ -66,6 +66,11 @@ DXCC_PREFIXES = {
 _dxworld_session = None
 
 
+HTTP_TIMEOUT = 15  # sekunder per anrop
+
+_dxworld_blocked = False  # sätt True om DX-World blockerar i denna session
+
+
 def _make_session():
     import requests
     s = requests.Session()
@@ -77,7 +82,7 @@ def _make_session():
         "Connection": "keep-alive",
     })
     try:
-        s.get("https://www.dx-world.net/", timeout=15)
+        s.get("https://www.dx-world.net/", timeout=HTTP_TIMEOUT)
     except Exception:
         pass
     return s
@@ -90,16 +95,16 @@ def http_get(url, binary=False):
         if "dx-world.net" in url:
             if _dxworld_session is None:
                 _dxworld_session = _make_session()
-            resp = _dxworld_session.get(url, timeout=60)
+            resp = _dxworld_session.get(url, timeout=HTTP_TIMEOUT)
             resp.raise_for_status()
         else:
-            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=60)
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=HTTP_TIMEOUT)
             resp.raise_for_status()
         return resp.content if binary else resp.text
     except ImportError:
         pass
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
         data = r.read()
     if binary:
         return data
@@ -483,20 +488,24 @@ def _dxworld_fetch():
         if a not in seen:
             seen.add(a); unique.append(a)
     import time
+    global _dxworld_blocked
     for num, year, month in unique:
+        if _dxworld_blocked:
+            break
         url = DXWORLD_URL.format(year=year, month=month, num=num)
-        for _ in range(3):
-            try:
-                data = http_get(url, binary=True)
-                if data[:4] == b"%PDF":
-                    return data
+        try:
+            data = http_get(url, binary=True)
+            if data[:4] == b"%PDF":
+                return data
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                _dxworld_blocked = True
                 break
-            except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    break
-                time.sleep(3)
-            except Exception:
-                time.sleep(3)
+            if e.code == 404:
+                continue
+            time.sleep(2)
+        except Exception:
+            time.sleep(2)
     return None
 
 
@@ -509,6 +518,8 @@ def fetch_dx_news(on_progress=None, on_done=None):
     on_done(union_calls, special_calls, error_msg): resultat
     """
     def _run():
+        global _dxworld_blocked
+        _dxworld_blocked = False
         today    = datetime.now()
         ws       = today
         we       = today + timedelta(days=WINDOW_DAYS)
