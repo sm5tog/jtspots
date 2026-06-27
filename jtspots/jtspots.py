@@ -1608,16 +1608,24 @@ class JTSpots(ctk.CTk):
         self._append_to_box(self._log, text, tag)
 
     def _rerender_filtered(self):
-        self._log_flt.configure(state='normal')
-        self._log_flt.delete('1.0', 'end')
-        self._log_flt.configure(state='disabled')
+        box = self._log_flt
+        box.configure(state='normal')
+        box.delete('1.0', 'end')
+        ts = datetime.now().strftime('%H:%M:%S')
         for s in self._spot_log:
             passed, rule_name = self._engine.evaluate(
                 s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules,
                 s.get('source',''), s.get('spotter',''))
             if passed:
                 suffix = f' [{rule_name}]' if rule_name else ''
-                self._append_to_box(self._log_flt, s['line'] + suffix, tag=s['source'])
+                line = f'{ts}  {s["line"]}{suffix}\n'
+                end = box._textbox.index('end-1c')
+                box._textbox.insert('end', line)
+                tag = s.get('source', '')
+                if tag:
+                    box._textbox.tag_add(tag, f'{end} linestart', f'{end} lineend')
+        box._textbox.see('end')
+        box.configure(state='disabled')
 
     def _clear_log(self):
         for box in (self._log, self._log_flt):
