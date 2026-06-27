@@ -497,8 +497,11 @@ class RuleEngine:
         return False, ''
 
     def _matches(self, rule, call, freq_khz, snr, mode, source, spotter):
+        conds = rule.get('conditions', [])
+        if not conds:
+            return False
         return all(self._cond_ok(c, call, freq_khz, snr, mode, source, spotter)
-                   for c in rule.get('conditions', []))
+                   for c in conds)
 
     def _cond_ok(self, cond, call, freq_khz, snr, mode, source, spotter):
         t = cond.get('type', '')
@@ -1227,7 +1230,10 @@ class JTSpots(ctk.CTk):
                 self._spot_log.pop(0)
             passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules, 'cluster', spotter_call)
             if passed and self._telnet:
-                self._telnet.send_spot(out)
+                cl_comment = rule_name if rule_name else comment
+                cl_out = (f'DX de {spotter_call+":":<11}{freq_khz:>9.1f}  '
+                          f'{call:<13} {cl_comment:<20} {utc}')
+                self._telnet.send_spot(cl_out)
             self._spot_count += 1
             self.after(0, lambda l=out: self._log_line(l, tag='cluster'))
             if passed:
@@ -1301,7 +1307,7 @@ class JTSpots(ctk.CTk):
             mode = mode_from_freq(freq_khz)
         de      = self._e_call.get().strip() or 'JTSpots'
         utc     = datetime.now(timezone.utc).strftime('%H%MZ')
-        comment = f'{mode} {snr:+d}dB'
+        comment = rule_name if rule_name else f'{mode} {snr:+d}dB'
         line = (f'DX de {de + ":":<11}{freq_khz:>9.1f}  {call:<13} '
                 f'{comment:<20} {utc}')
         spot = {'call': call, 'freq_khz': freq_khz, 'snr': snr,
