@@ -422,10 +422,10 @@ class SpotBuffer:
 # ── Filterregler ──────────────────────────────────────────────────────────────
 
 COND_TYPES = {
-    'atno':             'ATNO (kräver Clublog)',
-    'new_band':         'Ny bandländer (kräver Clublog)',
-    'sat_needed':       'Satellit-DXCC (kräver Clublog)',
-    'marathon':         'DX Marathon i år (kräver Clublog)',
+    'atno':             'ATNO',
+    'new_band':         'Ny bandländer',
+    'sat_needed':       'Satellit-DXCC',
+    'marathon':         'DX Marathon i år',
     'wanted_call':      'Wanted callsign (kommasep.)',
     'not_call':         'Exkludera callsign (kommasep.)',
     'band':             'Band',
@@ -883,6 +883,8 @@ class JTSpots(ctk.CTk):
         self._mk_label(tab, 'ADIF UDP-port:', 2, 0)
         self._e_adif_port = self._mk_entry(tab, str(DEFAULT_ADIF_PORT), 2, 1, 70)
         self._chk_adif = ctk.CTkCheckBox(tab, text='Aktivera ADIF UDP-lyssnare',
+                                          checkbox_width=14, checkbox_height=14,
+                                          corner_radius=2, border_width=1,
                                           command=self._adif_toggle)
         self._chk_adif.grid(row=3, column=0, columnspan=3, sticky='w', padx=8, pady=4)
 
@@ -966,7 +968,9 @@ class JTSpots(ctk.CTk):
         buf_row = ctk.CTkFrame(tab, fg_color='transparent')
         buf_row.grid(row=1, column=0, sticky='w', pady=2)
         self._flt_buf = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(buf_row, text='Ignore dupes (min):', variable=self._flt_buf).pack(side='left', padx=(8, 4))
+        ctk.CTkCheckBox(buf_row, text='Ignore dupes (min):', variable=self._flt_buf,
+                        checkbox_width=14, checkbox_height=14,
+                        corner_radius=2, border_width=1).pack(side='left', padx=(8, 4))
         self._e_buf = ctk.CTkEntry(buf_row, width=55)
         self._e_buf.insert(0, '10')
         self._e_buf.pack(side='left', padx=4)
@@ -1006,21 +1010,37 @@ class JTSpots(ctk.CTk):
             def on_toggle(v=var, r=rule):
                 r['enabled'] = v.get()
                 self._rerender_filtered()
-            ctk.CTkCheckBox(self._rule_frame, text='', variable=var, width=30,
+            ctk.CTkCheckBox(self._rule_frame, text='', variable=var,
+                            checkbox_width=14, checkbox_height=14,
+                            corner_radius=2, border_width=1,
                             command=on_toggle).grid(row=i, column=2, padx=2, pady=2)
             # Namn + villkorssammanfattning
-            cond_summary = ', '.join(COND_TYPES.get(c['type'], c['type'])
+            cond_summary = ', '.join(self._cond_label(c['type'])
                                      for c in rule.get('conditions', []))
             label = f"{rule.get('name','?')}  —  {cond_summary}" if cond_summary else rule.get('name', '?')
             ctk.CTkLabel(self._rule_frame, text=label, anchor='w').grid(
                 row=i, column=3, sticky='w', padx=6, pady=2)
+            # "Uppdatera matris"-knapp om regeln har Clublog-villkor
+            cl_keys = list(dict.fromkeys(
+                COND_MATRIX_KEY[c['type']] for c in rule.get('conditions', [])
+                if c.get('type') in COND_MATRIX_KEY
+            ))
+            if cl_keys:
+                def _upd(keys=cl_keys):
+                    for k in keys:
+                        self._fetch_clublog(key=k, on_done=lambda *_: self._refresh_rule_list())
+                ctk.CTkButton(self._rule_frame, text='Uppdatera matris', width=130,
+                              command=_upd).grid(row=i, column=4, padx=4, pady=2)
+                col_edit, col_del = 5, 6
+            else:
+                col_edit, col_del = 4, 5
             ctk.CTkButton(self._rule_frame, text='Redigera', width=80,
                           command=lambda r=rule: self._open_rule_editor(r)).grid(
-                row=i, column=4, padx=4, pady=2)
+                row=i, column=col_edit, padx=4, pady=2)
             ctk.CTkButton(self._rule_frame, text='Ta bort', width=75,
                           fg_color='#662222', hover_color='#882222',
                           command=lambda r=rule: self._delete_rule(r)).grid(
-                row=i, column=5, padx=4, pady=2)
+                row=i, column=col_del, padx=4, pady=2)
 
     def _move_rule(self, idx, direction):
         new_idx = idx + direction
@@ -1262,7 +1282,9 @@ class JTSpots(ctk.CTk):
 
     def _mk_chk(self, parent, text, row, col, default):
         var = ctk.BooleanVar(value=default)
-        ctk.CTkCheckBox(parent, text=text, variable=var).grid(
+        ctk.CTkCheckBox(parent, text=text, variable=var,
+                        checkbox_width=14, checkbox_height=14,
+                        corner_radius=2, border_width=1).grid(
             row=row, column=col, sticky='w', padx=8, pady=4)
         return var
 
@@ -1462,7 +1484,7 @@ class JTSpots(ctk.CTk):
         key = COND_MATRIX_KEY.get(t)
         if key:
             ts = self._clublog.matrix_fetched_at(key)
-            base = COND_TYPES.get(t, t).split(' (')[0]
+            base = COND_TYPES.get(t, t)
             if ts:
                 return f'{base} {ts.strftime("%y%m%d %H:%M")}'
             return f'{base} (ej hämtad)'
