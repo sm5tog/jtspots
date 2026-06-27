@@ -996,6 +996,24 @@ class JTSpots(ctk.CTk):
         self._rule_frame.columnconfigure(1, weight=1)
         self._refresh_rule_list()
 
+        # Testpanel
+        ctk.CTkFrame(tab, height=1, fg_color='gray30').grid(
+            row=5, column=0, sticky='ew', padx=4, pady=8)
+        tp = ctk.CTkFrame(tab, fg_color='transparent')
+        tp.grid(row=6, column=0, sticky='ew', padx=4, pady=2)
+        ctk.CTkLabel(tp, text='Testa spot', font=ctk.CTkFont(weight='bold')).grid(
+            row=0, column=0, columnspan=8, sticky='w', padx=8, pady=(4, 6))
+        for col, lbl in enumerate(['Call:', 'Spotter:', 'Frekvens (kHz):']):
+            ctk.CTkLabel(tp, text=lbl).grid(row=1, column=col*2, sticky='e', padx=(8,2))
+        self._test_call    = ctk.CTkEntry(tp, width=100); self._test_call.grid(row=1, column=1, padx=4)
+        self._test_spotter = ctk.CTkEntry(tp, width=100); self._test_spotter.grid(row=1, column=3, padx=4)
+        self._test_freq    = ctk.CTkEntry(tp, width=100); self._test_freq.grid(row=1, column=5, padx=4)
+        ctk.CTkButton(tp, text='Testa', width=80, command=self._run_spot_test).grid(
+            row=1, column=6, padx=8)
+        self._lbl_test_result = ctk.CTkLabel(tp, text='', text_color='gray',
+                                              font=ctk.CTkFont(size=11))
+        self._lbl_test_result.grid(row=2, column=0, columnspan=8, sticky='w', padx=8, pady=4)
+
     def _refresh_rule_list(self):
         for w in self._rule_frame.winfo_children():
             try:
@@ -1702,6 +1720,45 @@ class JTSpots(ctk.CTk):
 
     def _log_line(self, text, tag=None):
         self._append_to_box(self._log, text, tag)
+
+    def _run_spot_test(self):
+        call    = self._test_call.get().strip().upper()
+        spotter = self._test_spotter.get().strip().upper()
+        try:
+            freq_khz = float(self._test_freq.get().strip())
+        except ValueError:
+            self._lbl_test_result.configure(text='Ogiltig frekvens', text_color='#cc4444')
+            return
+        if not call:
+            self._lbl_test_result.configure(text='Ange ett call', text_color='#cc4444')
+            return
+
+        utc  = datetime.now(timezone.utc).strftime('%H%MZ')
+        mode = mode_from_freq(freq_khz)
+        band = freq_to_band(freq_khz)
+        de   = self._e_call.get().strip() or 'JTSpots'
+        line = (f'DX de {de + ":":<11}{freq_khz:>9.1f}  {call:<13} '
+                f'{"test":<20} {utc}')
+        spot = {'call': call, 'freq_khz': freq_khz, 'snr': 0,
+                'mode': mode, 'line': line, 'source': 'wsjt', 'spotter': spotter}
+
+        self._lbl_test_result.configure(text='Utvärderar...', text_color='gray')
+        rules = list(self._rules)
+
+        def _eval():
+            passed, rule_name = self._engine.evaluate(
+                call, freq_khz, 0, mode, rules, 'wsjt', spotter)
+            if passed:
+                msg  = f'✓ Passerar — regel: "{rule_name}"  |  {band}m {mode}'
+                color = '#00cc44'
+            else:
+                msg  = f'✗ Blockerad  |  {band}m {mode}'
+                color = '#cc4444'
+            self.after(0, lambda: self._lbl_test_result.configure(text=msg, text_color=color))
+            if passed:
+                self.after(0, lambda: self._ingest_spot(spot))
+
+        threading.Thread(target=_eval, daemon=True).start()
 
     def _rerender_filtered(self):
         # Debounce: cancel previous pending re-render
