@@ -132,9 +132,10 @@ def extract_cq_call(msg: str):
 
 # DX cluster spot format: "DX de SPOTTER:   FREQ  CALL  COMMENT  TIME"
 _SPOT_RE = re.compile(
-    r'^DX de\s+(\S+):\s+(\d+\.?\d*)\s+(\S+)\s+(.*?)\s+(\d{4}Z)\s*$',
+    r'^DX de\s+(\S+?):?\s+(\d+\.?\d*)\s+(\S+)\s+(.*?)\s+(\d{4}Z)',
     re.IGNORECASE
 )
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mK]')
 
 
 # ── Clublog-klient ───────────────────────────────────────────────────────────
@@ -402,7 +403,7 @@ class ClusterClient:
                     buf += data
                     while '\n' in buf:
                         line, buf = buf.split('\n', 1)
-                        line = line.strip('\r\n ')
+                        line = _ANSI_RE.sub('', line).strip()
                         if line:
                             self._on_spot(line)
                 except socket.timeout:
