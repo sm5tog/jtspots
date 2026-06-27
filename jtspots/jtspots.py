@@ -576,6 +576,8 @@ class ClusterClient:
         self._on_status = on_status  # callback(name: str, connected: bool, msg: str)
         self._running   = False
         self._connected = False
+        self._sock      = None
+        self._last_tx   = 0.0
 
     @property
     def name(self):
@@ -591,6 +593,19 @@ class ClusterClient:
 
     def disconnect(self):
         self._running = False
+        if self._sock and self._connected:
+            try:
+                self._sock.sendall(b'BYE\r\n')
+            except Exception:
+                pass
+
+    def keepalive(self):
+        if self._sock and self._connected:
+            try:
+                self._sock.sendall(b'SH/DX 1\r\n')
+                self._last_tx = time.time()
+            except Exception:
+                pass
 
     def _run(self):
         host = self._cfg.get('host', '')
@@ -603,7 +618,9 @@ class ClusterClient:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(10)
             sock.connect((host, port))
+            self._sock      = sock
             self._connected = True
+            self._last_tx   = time.time()
             self._on_status(self.name, True, f'Ansluten till {host}:{port}')
 
             for cmd in init.splitlines():
@@ -615,6 +632,7 @@ class ClusterClient:
                     continue
                 cmd = cmd.replace('<CALLSIGN>', call).replace('<PASSWORD>', pwd)
                 sock.sendall((cmd + '\r\n').encode())
+                self._last_tx = time.time()
                 time.sleep(0.3)
 
             buf = ''
@@ -636,6 +654,7 @@ class ClusterClient:
             self._on_status(self.name, False, f'Fel: {e}')
         finally:
             self._connected = False
+            self._sock      = None
             self._on_status(self.name, False, f'Frånkopplad från {host}')
             try: sock.close()
             except Exception: pass
@@ -1402,6 +1421,10 @@ class JTSpots(ctk.CTk):
             self._lbl_clients.configure(
                 text=f'{n} klient{"er" if n != 1 else ""}')
         self._lbl_count.configure(text=f'{self._spot_count} spots')
+        now = time.time()
+        for c in self._clusters:
+            if c.connected and (now - c._last_tx) > 180:
+                c.keepalive()
         self.after(2000, self._tick)
 
     def _append_to_box(self, box, text, tag=None):
