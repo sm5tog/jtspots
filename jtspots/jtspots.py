@@ -995,7 +995,10 @@ class JTSpots(ctk.CTk):
 
     def _refresh_rule_list(self):
         for w in self._rule_frame.winfo_children():
-            w.destroy()
+            try:
+                w.destroy()
+            except Exception:
+                pass
         self._rule_frame.columnconfigure(2, weight=1)
         for i, rule in enumerate(self._rules):
             # Upp/ned
@@ -1028,7 +1031,7 @@ class JTSpots(ctk.CTk):
             if cl_keys:
                 def _upd(keys=cl_keys):
                     for k in keys:
-                        self._fetch_clublog(key=k, on_done=lambda *_: self._refresh_rule_list())
+                        self._fetch_clublog(key=k, on_done=lambda *_: self.after_idle(self._refresh_rule_list))
                 ctk.CTkButton(self._rule_frame, text='Uppdatera matris', width=130,
                               command=_upd).grid(row=i, column=4, padx=4, pady=2)
                 col_edit, col_del = 5, 6
