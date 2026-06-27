@@ -844,6 +844,9 @@ class JTSpots(ctk.CTk):
         e_name.insert(0, rule.get('name', ''))
         e_name.pack(side='left', padx=4)
 
+        working = [dict(c) for c in rule.get('conditions', [])]
+        value_getters = []
+
         # Matris-rad (visas bara om regeln har atno/new_band)
         def uses_clublog(conds):
             return any(c.get('type') in ('atno', 'new_band') for c in conds)
@@ -880,9 +883,6 @@ class JTSpots(ctk.CTk):
         cond_frame = ctk.CTkScrollableFrame(dlg, height=280)
         cond_frame.pack(fill='both', expand=True, padx=12, pady=4)
         cond_frame.columnconfigure(1, weight=1)
-
-        working = [dict(c) for c in rule.get('conditions', [])]
-        value_getters = []   # list of (cond, callable -> str)
 
         def make_checkbox_row(parent, options, selected_values, row, rows=None):
             """Render checkboxes, optionally split over multiple rows."""
