@@ -534,6 +534,8 @@ class RuleEngine:
             _, reason = self._clublog.is_needed(call, freq_khz, key='normal')
             return reason == 'ATNO'
         if t == 'new_band':
+            if freq_to_band(freq_khz) == 'AO100':
+                return False  # Satellitband hanteras av sat_needed, inte new_band
             needed, _ = self._clublog.is_needed(call, freq_khz, key='normal')
             return needed
         if t == 'sat_needed':
