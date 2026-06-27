@@ -122,8 +122,8 @@ def freq_to_band(freq_khz: float) -> str:
     if 28000  <= f <= 29700:  return '10'
     if 50000   <= f <= 54000:   return '6'
     if 144000  <= f <= 148000:  return '2'
-    if 10450000 <= f <= 10500000: return 'AO100'   # 13cm
-    if 24000000 <= f <= 24050000: return 'AO100'   # 3cm
+    if 2400000  <= f <= 2450000:  return 'AO100'   # 13cm upplink
+    if 10450000 <= f <= 10500000: return 'AO100'   # 3cm nedlänk
     return ''
 
 
