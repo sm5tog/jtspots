@@ -503,6 +503,7 @@ class JTSpots(ctk.CTk):
         self._telnet        = None
         self._rules         = []
         self._spot_count    = 0
+        self._spot_log      = []   # [{call, freq_khz, snr, mode, line, source}]
         self._clublog       = ClublogClient()
         self._buffer        = SpotBuffer()
         self._engine        = RuleEngine(self._clublog)
@@ -555,10 +556,14 @@ class JTSpots(ctk.CTk):
         self._lbl_count.pack(side='left', padx=4)
         ctk.CTkButton(hdr, text='Rensa', width=70,
                       command=self._clear_log).pack(side='right', padx=8, pady=4)
-        self._log = ctk.CTkTextbox(lf, font=('Courier', 11), state='disabled')
-        self._log.pack(fill='both', expand=True, padx=8, pady=(0, 8))
-        self._log._textbox.tag_config('alert',   foreground='#ffcc00')
-        self._log._textbox.tag_config('cluster', foreground='#88ccff')
+
+        log_tabs = ctk.CTkTabview(lf, height=260)
+        log_tabs.pack(fill='both', expand=True, padx=4, pady=(0, 4))
+        log_tabs.add('Alla')
+        log_tabs.add('Filtrerat')
+
+        self._log     = self._make_log_box(log_tabs.tab('Alla'))
+        self._log_flt = self._make_log_box(log_tabs.tab('Filtrerat'))
 
     def _build_wsjtx_tab(self, tab):
         self._mk_label(tab, 'Multicast IP:', 0, 0)
@@ -684,8 +689,11 @@ class JTSpots(ctk.CTk):
             w.destroy()
         for i, rule in enumerate(self._rules):
             var = ctk.BooleanVar(value=rule.get('enabled', True))
+            def on_toggle(v=var, r=rule):
+                r['enabled'] = v.get()
+                self._rerender_filtered()
             ctk.CTkCheckBox(self._rule_frame, text='', variable=var, width=30,
-                            command=lambda v=var, r=rule: r.update({'enabled': v.get()})
+                            command=on_toggle
                             ).grid(row=i, column=0, padx=(4, 0), pady=2)
             cond_summary = ', '.join(COND_TYPES.get(c['type'], c['type'])
                                      for c in rule.get('conditions', []))
@@ -791,6 +799,13 @@ class JTSpots(ctk.CTk):
         ctk.CTkButton(btn_row, text='Avbryt', width=100,
                       fg_color='gray30', hover_color='gray40',
                       command=dlg.destroy).pack(side='left')
+
+    def _make_log_box(self, parent):
+        box = ctk.CTkTextbox(parent, font=('Courier', 11), state='disabled')
+        box.pack(fill='both', expand=True, padx=4, pady=4)
+        box._textbox.tag_config('cluster', foreground='#88ccff')
+        box._textbox.tag_config('rule',    foreground='#ffcc00')
+        return box
 
     # ── Hjälpwidgets ──────────────────────────────────────────────────────────
 
@@ -955,16 +970,22 @@ class JTSpots(ctk.CTk):
                 if self._buffer.is_duplicate(call, freq_to_band(freq_khz)):
                     return
             mode_cl = mode_from_freq(freq_khz)
-            passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules)
-            if not passed:
-                return
-            tag = f' [{rule_name}]' if rule_name else ''
             out = (f'DX de {spotter.rstrip(":")+":":<11}{freq_khz:>9.1f}  '
-                   f'{call:<13} {comment + tag:<20} {utc}')
-            if self._telnet:
+                   f'{call:<13} {comment:<20} {utc}')
+            spot = {'call': call, 'freq_khz': freq_khz, 'snr': -99,
+                    'mode': mode_cl, 'line': out, 'source': 'cluster'}
+            self._spot_log.append(spot)
+            if len(self._spot_log) > 1000:
+                self._spot_log.pop(0)
+            passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules)
+            if passed and self._telnet:
                 self._telnet.send_spot(out)
             self._spot_count += 1
             self.after(0, lambda l=out: self._log_line(l, tag='cluster'))
+            if passed:
+                suffix = f' [{rule_name}]' if rule_name else ''
+                self.after(0, lambda l=out, s=suffix: self._append_to_box(
+                    self._log_flt, l + s, tag='rule' if s else 'cluster'))
         else:
             self.after(0, lambda l=line: self._log_line(f'  {l}'))
 
@@ -1024,20 +1045,26 @@ class JTSpots(ctk.CTk):
 
         self._emit_spot(callsign, freq_khz, snr, mode, rule_name)
 
-    def _emit_spot(self, call, freq_khz, snr, mode, reason=''):
+    def _emit_spot(self, call, freq_khz, snr, mode, rule_name=''):
         if not mode or mode == '~':
             mode = mode_from_freq(freq_khz)
         de      = self._e_call.get().strip() or 'JTSpots'
         utc     = datetime.now(timezone.utc).strftime('%H%MZ')
         comment = f'{mode} {snr:+d}dB'
-        if reason:
-            comment += f' [{reason}]'
         line = (f'DX de {de + ":":<11}{freq_khz:>9.1f}  {call:<13} '
                 f'{comment:<20} {utc}')
-        if self._telnet:
+        spot = {'call': call, 'freq_khz': freq_khz, 'snr': snr,
+                'mode': mode, 'line': line, 'source': 'wsjt'}
+        self._spot_log.append(spot)
+        if len(self._spot_log) > 1000:
+            self._spot_log.pop(0)
+        if self._telnet and rule_name:
             self._telnet.send_spot(line)
         self._spot_count += 1
-        self.after(0, lambda l=line, r=reason: self._log_line(l, alert=bool(r)))
+        self.after(0, lambda l=line: self._log_line(l))
+        if rule_name:
+            suffix = f' [{rule_name}]'
+            self.after(0, lambda l=line, s=suffix: self._append_to_box(self._log_flt, l + s, tag='rule'))
 
     # ── Logg + tick ───────────────────────────────────────────────────────────
 
@@ -1049,21 +1076,36 @@ class JTSpots(ctk.CTk):
         self._lbl_count.configure(text=f'{self._spot_count} spots')
         self.after(2000, self._tick)
 
-    def _log_line(self, text, alert=False, tag=None):
+    def _append_to_box(self, box, text, tag=None):
         ts = datetime.now().strftime('%H:%M:%S')
-        self._log.configure(state='normal')
-        self._log.insert('end', f'{ts}  {text}\n')
-        if alert or tag:
-            t   = tag if tag else 'alert'
-            end = self._log._textbox.index('end-1c')
-            self._log._textbox.tag_add(t, f'{end} linestart', end)
-        self._log.see('end')
-        self._log.configure(state='disabled')
+        box.configure(state='normal')
+        box.insert('end', f'{ts}  {text}\n')
+        if tag:
+            end = box._textbox.index('end-1c')
+            box._textbox.tag_add(tag, f'{end} linestart', end)
+        box.see('end')
+        box.configure(state='disabled')
+
+    def _log_line(self, text, tag=None):
+        self._append_to_box(self._log, text, tag)
+
+    def _rerender_filtered(self):
+        self._log_flt.configure(state='normal')
+        self._log_flt.delete('1.0', 'end')
+        self._log_flt.configure(state='disabled')
+        for s in self._spot_log:
+            passed, rule_name = self._engine.evaluate(
+                s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules)
+            if passed:
+                suffix = f' [{rule_name}]' if rule_name else ''
+                self._append_to_box(self._log_flt, s['line'] + suffix, tag=s['source'])
 
     def _clear_log(self):
-        self._log.configure(state='normal')
-        self._log.delete('1.0', 'end')
-        self._log.configure(state='disabled')
+        for box in (self._log, self._log_flt):
+            box.configure(state='normal')
+            box.delete('1.0', 'end')
+            box.configure(state='disabled')
+        self._spot_log.clear()
         self._spot_count = 0
 
     # ── Spara / ladda inställningar ───────────────────────────────────────────
