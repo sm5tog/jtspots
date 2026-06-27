@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import customtkinter as ctk
 
-SETTINGS_FILE = Path(__file__).parent / 'jtspots_settings.json'
+SETTINGS_FILE   = Path(__file__).parent / 'jtspots_settings.json'
+MATRIX_CACHE    = Path(__file__).parent / 'jtspots_matrix_cache.json'
 
 WSJTX_MAGIC = 0xADBCCBDA
 MSG_STATUS  = 1
@@ -266,17 +267,33 @@ class ClublogClient:
         with self._lock:
             return self._fetched_at.get(key)
 
-    def count_needed(self) -> int:
-        """Totalt antal behövda bandplatser."""
+    def save_cache(self, path):
         with self._lock:
-            if not self._matrix:
-                return 0
-            return self.entity_count
+            payload = {
+                k: {'matrix': m, 'fetched_at': self._fetched_at[k].isoformat()}
+                for k, m in self._matrices.items()
+                if k in self._fetched_at
+            }
+        try:
+            Path(path).write_text(json.dumps(payload), encoding='utf-8')
+        except Exception:
+            pass
+
+    def load_cache(self, path):
+        try:
+            payload = json.loads(Path(path).read_text(encoding='utf-8'))
+        except Exception:
+            return
+        with self._lock:
+            for k, v in payload.items():
+                self._matrices[k]   = v['matrix']
+                self._counts[k]     = len(v['matrix'])
+                self._fetched_at[k] = datetime.fromisoformat(v['fetched_at'])
 
     @property
     def ready(self) -> bool:
         with self._lock:
-            return bool(self._matrix)
+            return bool(self._matrices)
 
 
 # ── Telnet DX-cluster server (mot Log4OM) ────────────────────────────────────
@@ -647,6 +664,7 @@ class JTSpots(ctk.CTk):
 
         self._build_ui()
         self._load_settings()
+        self._clublog.load_cache(MATRIX_CACHE)
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self.after(2000, self._tick)
         self.after(100, self._start)
@@ -982,9 +1000,30 @@ class JTSpots(ctk.CTk):
                     getter = make_checkbox_row(cond_frame, CONT_OPTIONS, selected, i)
                     value_getters.append((cond, getter))
                 elif t in ('wanted_call', 'not_call', 'snr', 'spotter_dxcc'):
-                    e = ctk.CTkEntry(cond_frame, width=200)
+                    cell = ctk.CTkFrame(cond_frame, fg_color='transparent')
+                    cell.grid(row=i, column=1, sticky='ew', padx=4, pady=2)
+                    cell.columnconfigure(0, weight=1)
+                    e = ctk.CTkEntry(cell, width=200)
                     e.insert(0, val)
-                    e.grid(row=i, column=1, sticky='ew', padx=4, pady=4)
+                    e.grid(row=0, column=0, sticky='ew', pady=2)
+                    if t == 'wanted_call':
+                        def _load_collect(entry=e, kind='union'):
+                            p = Path(r'c:/claude/collect') / f'calls_{kind}.txt'
+                            try:
+                                calls = [ln.strip() for ln in p.read_text(encoding='utf-8').splitlines() if ln.strip()]
+                                entry.delete(0, 'end')
+                                entry.insert(0, ','.join(calls))
+                            except Exception as ex:
+                                entry.delete(0, 'end')
+                                entry.insert(0, f'FEL: {ex}')
+                        btn_row = ctk.CTkFrame(cell, fg_color='transparent')
+                        btn_row.grid(row=1, column=0, sticky='w')
+                        ctk.CTkButton(btn_row, text='DX News Union', width=110,
+                                      command=lambda: _load_collect(e, 'union'),
+                                      font=ctk.CTkFont(size=11)).pack(side='left', padx=(0, 4))
+                        ctk.CTkButton(btn_row, text='DX News Special', width=118,
+                                      command=lambda: _load_collect(e, 'special'),
+                                      font=ctk.CTkFont(size=11)).pack(side='left')
                     value_getters.append((cond, e.get))
                 else:
                     ctk.CTkLabel(cond_frame, text='').grid(row=i, column=1)
@@ -1230,7 +1269,7 @@ class JTSpots(ctk.CTk):
                 self._spot_log.pop(0)
             passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules, 'cluster', spotter_call)
             if passed and self._telnet:
-                cl_comment = rule_name if rule_name else comment
+                cl_comment = f'{rule_name} {comment}' if rule_name else comment
                 cl_out = (f'DX de {spotter_call+":":<11}{freq_khz:>9.1f}  '
                           f'{call:<13} {cl_comment:<20} {utc}')
                 self._telnet.send_spot(cl_out)
@@ -1262,6 +1301,8 @@ class JTSpots(ctk.CTk):
             return
         color = '#00cc44' if ok else '#cc4444'
         self.after(0, lambda: self._lbl_cl_status.configure(text=msg, text_color=color))
+        if ok:
+            self._clublog.save_cache(MATRIX_CACHE)
 
     # ── WSJT-X pakethantering ─────────────────────────────────────────────────
 
@@ -1307,7 +1348,7 @@ class JTSpots(ctk.CTk):
             mode = mode_from_freq(freq_khz)
         de      = self._e_call.get().strip() or 'JTSpots'
         utc     = datetime.now(timezone.utc).strftime('%H%MZ')
-        comment = rule_name if rule_name else f'{mode} {snr:+d}dB'
+        comment = f'{rule_name} {mode} {snr:+d}dB' if rule_name else f'{mode} {snr:+d}dB'
         line = (f'DX de {de + ":":<11}{freq_khz:>9.1f}  {call:<13} '
                 f'{comment:<20} {utc}')
         spot = {'call': call, 'freq_khz': freq_khz, 'snr': snr,
