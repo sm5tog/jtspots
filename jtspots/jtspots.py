@@ -249,12 +249,13 @@ class ClublogClient:
 # ── Telnet DX-cluster server (mot Log4OM) ────────────────────────────────────
 
 class SpotServer:
-    def __init__(self, port):
-        self._port    = port
-        self._clients = []
-        self._lock    = threading.Lock()
-        self._running = False
-        self._sock    = None
+    def __init__(self, port, on_connect=None):
+        self._port       = port
+        self._clients    = []
+        self._lock       = threading.Lock()
+        self._running    = False
+        self._sock       = None
+        self._on_connect = on_connect  # callable(conn) called for each new client
 
     def start(self):
         self._running = True
@@ -278,6 +279,11 @@ class SpotServer:
                 with self._lock:
                     self._clients.append(conn)
                 conn.sendall(b'JTSpots DX Cluster\r\n')
+                if self._on_connect:
+                    try:
+                        self._on_connect(conn)
+                    except Exception:
+                        pass
             except socket.timeout:
                 pass
             except Exception:
@@ -884,7 +890,7 @@ class JTSpots(ctk.CTk):
                 elif t == 'spotter_cont':
                     getter = make_checkbox_row(cond_frame, CONT_OPTIONS, selected, i)
                     value_getters.append((cond, getter))
-                elif t in ('wanted_call', 'not_call', 'snr'):
+                elif t in ('wanted_call', 'not_call', 'snr', 'spotter_dxcc'):
                     e = ctk.CTkEntry(cond_frame, width=200)
                     e.insert(0, val)
                     e.grid(row=i, column=1, sticky='ew', padx=4, pady=4)
@@ -981,7 +987,7 @@ class JTSpots(ctk.CTk):
             self._log_line(f'FEL i inställningar: {e}')
             return
 
-        self._telnet = SpotServer(tport)
+        self._telnet = SpotServer(tport, on_connect=self._on_telnet_connect)
         self._telnet.start()
 
         self._udp = UDPListener(mcast, uport, self._on_packet)
@@ -997,6 +1003,18 @@ class JTSpots(ctk.CTk):
                 client = ClusterClient(cfg, self._on_cluster_line, self._on_cluster_status)
                 self._clusters.append(client)
                 client.connect()
+
+    def _on_telnet_connect(self, conn):
+        recent = self._spot_log[-30:]
+        for s in recent:
+            passed, rule_name = self._engine.evaluate(
+                s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules,
+                s.get('source', ''), s.get('spotter', ''))
+            if passed:
+                try:
+                    conn.sendall((s['line'] + '\r\n').encode())
+                except Exception:
+                    break
 
     def _stop(self):
         if self._udp:    self._udp.stop()
