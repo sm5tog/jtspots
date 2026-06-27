@@ -125,10 +125,23 @@ _CQ_RE = re.compile(
     r'^CQ(?:\s+(?:DX|[A-Z]{2,3}))?\s+([A-Z0-9/]+)\s+[A-R]{2}[0-9]{2}',
     re.IGNORECASE
 )
+_VALID_CALL_RE = re.compile(r'^[A-Z0-9]{3,}(?:/[A-Z0-9]+)?$', re.IGNORECASE)
+_JUNK_CALLS = {'73', 'RR73', 'RRR', 'TNX', 'TU', 'DE', 'CQ', 'DX', 'QSL'}
 
 def extract_cq_call(msg: str):
     m = _CQ_RE.match(msg.strip())
     return m.group(1).upper() if m else None
+
+def is_valid_callsign(s: str) -> bool:
+    if not s or '<' in s or '>' in s:
+        return False
+    if s.upper() in _JUNK_CALLS:
+        return False
+    if not _VALID_CALL_RE.match(s):
+        return False
+    has_letter = any(c.isalpha() for c in s)
+    has_digit  = any(c.isdigit() for c in s)
+    return has_letter and has_digit
 
 # DX cluster spot format: "DX de SPOTTER:   FREQ  CALL  COMMENT  TIME"
 _SPOT_RE = re.compile(
@@ -803,7 +816,9 @@ class JTSpots(ctk.CTk):
             return
         if callsign is None:
             parts = msg.strip().split()
-            callsign = parts[1] if len(parts) >= 2 else (parts[0] if parts else '?')
+            callsign = parts[1] if len(parts) >= 2 else (parts[0] if parts else '')
+        if not is_valid_callsign(callsign):
+            return
 
         if self._flt_snr.get():
             try:
