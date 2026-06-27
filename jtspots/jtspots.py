@@ -1044,7 +1044,7 @@ class JTSpots(ctk.CTk):
             label = f"{rule.get('name','?')}  —  {cond_summary}" if cond_summary else rule.get('name', '?')
             ctk.CTkLabel(self._rule_frame, text=label, anchor='w').grid(
                 row=i, column=3, sticky='w', padx=6, pady=2)
-            # "Uppdatera matris"-knapp om regeln har Clublog-villkor
+            # "Uppdatera matris"-knapp — alltid kolumn 4, tom om ej Clublog-regel
             cl_keys = list(dict.fromkeys(
                 COND_MATRIX_KEY[c['type']] for c in rule.get('conditions', [])
                 if c.get('type') in COND_MATRIX_KEY
@@ -1055,16 +1055,16 @@ class JTSpots(ctk.CTk):
                         self._fetch_clublog(key=k, on_done=lambda *_: self.after_idle(self._refresh_rule_list))
                 ctk.CTkButton(self._rule_frame, text='Uppdatera matris', width=130,
                               command=_upd).grid(row=i, column=4, padx=4, pady=2)
-                col_edit, col_del = 5, 6
             else:
-                col_edit, col_del = 4, 5
+                ctk.CTkLabel(self._rule_frame, text='', width=130).grid(row=i, column=4)
+            # Redigera och Ta bort alltid i kolumn 5 och 6
             ctk.CTkButton(self._rule_frame, text='Redigera', width=80,
                           command=lambda r=rule: self._open_rule_editor(r)).grid(
-                row=i, column=col_edit, padx=4, pady=2)
+                row=i, column=5, padx=4, pady=2)
             ctk.CTkButton(self._rule_frame, text='Ta bort', width=75,
                           fg_color='#662222', hover_color='#882222',
                           command=lambda r=rule: self._delete_rule(r)).grid(
-                row=i, column=col_del, padx=4, pady=2)
+                row=i, column=6, padx=4, pady=2)
 
     def _move_rule(self, idx, direction):
         new_idx = idx + direction
