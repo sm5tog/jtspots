@@ -116,7 +116,8 @@ def freq_to_band(freq_khz: float) -> str:
     if 28000  <= f <= 29700:  return '10'
     if 50000   <= f <= 54000:   return '6'
     if 144000  <= f <= 148000:  return '2'
-    if 10450000 <= f <= 10500000: return 'AO100'
+    if 10450000 <= f <= 10500000: return 'AO100'   # 13cm
+    if 24000000 <= f <= 24050000: return 'AO100'   # 3cm
     return ''
 
 
@@ -158,30 +159,44 @@ class ClublogClient:
     MATRIX_URL = 'https://clublog.org/json_dxccchart.php'
     DXCC_URL   = 'https://clublog.org/dxcc'
 
+    # Matriskeyar: 'normal', 'sat', 'marathon'
     def __init__(self):
-        self._matrix      = {}
+        self._matrices    = {}   # key -> {adif: {band: status}}
+        self._counts      = {}   # key -> int
+        self._fetched_at  = {}   # key -> datetime
         self._dxcc_cache  = {}
         self._lock        = threading.Lock()
         self.api_key      = ''
         self.email        = ''
         self.password     = ''
         self.callsign     = ''
-        self.last_fetch   = None
-        self.entity_count = 0
 
-    def fetch_matrix(self, on_done=None):
-        threading.Thread(target=self._fetch_matrix_bg, args=(on_done,),
+    @property
+    def last_fetch(self):
+        with self._lock:
+            return self._fetched_at.get('normal')
+
+    @property
+    def entity_count(self):
+        with self._lock:
+            return self._counts.get('normal', 0)
+
+    def _matrix_params(self, key):
+        base = {'call': self.callsign, 'api': self.api_key,
+                'email': self.email, 'password': self.password, 'mode': 0}
+        if key == 'sat':
+            base['sat'] = 1
+        elif key == 'marathon':
+            base['date'] = 3
+        return base
+
+    def fetch_matrix(self, key='normal', on_done=None):
+        threading.Thread(target=self._fetch_bg, args=(key, on_done),
                          daemon=True).start()
 
-    def _fetch_matrix_bg(self, on_done):
+    def _fetch_bg(self, key, on_done):
         try:
-            params = urllib.parse.urlencode({
-                'call':     self.callsign,
-                'api':      self.api_key,
-                'email':    self.email,
-                'password': self.password,
-                'mode':     0,
-            })
+            params = urllib.parse.urlencode(self._matrix_params(key))
             url = f'{self.MATRIX_URL}?{params}'
             debug_url = re.sub(r'(password=)[^&]+', r'\1***', url)
             debug_url = re.sub(r'(api=)[^&]+', r'\1***', debug_url)
@@ -194,12 +209,13 @@ class ClublogClient:
                 raise ValueError(f'Oväntat svar: {raw[:120]}')
             data = json.loads(raw)
             with self._lock:
-                self._matrix      = data
-                self._dxcc_cache  = {}
-                self.last_fetch   = datetime.now()
-                self.entity_count = len(data)
+                self._matrices[key]   = data
+                self._counts[key]     = len(data)
+                self._fetched_at[key] = datetime.now()
+                if key == 'normal':
+                    self._dxcc_cache = {}
             if on_done:
-                on_done(True, f'{self.entity_count} enheter hämtade')
+                on_done(True, f'{len(data)} enheter hämtade')
         except urllib.error.HTTPError as e:
             if on_done:
                 on_done(False, f'HTTP {e.code}: {e.reason}')
@@ -225,29 +241,30 @@ class ClublogClient:
         except Exception:
             return ''
 
-    def is_needed(self, callsign: str, freq_khz: float) -> tuple:
+    def is_needed(self, callsign: str, freq_khz: float, key='normal') -> tuple:
         with self._lock:
-            if not self._matrix:
+            matrix = self._matrices.get(key, {})
+            if not matrix:
                 return True, ''
         adif = self.get_dxcc(callsign)
         if not adif:
             return True, '?DXCC'
         band = freq_to_band(freq_khz)
         with self._lock:
-            if adif not in self._matrix:
+            matrix = self._matrices.get(key, {})
+            if adif not in matrix:
                 return True, 'ATNO'
-            if band and band not in self._matrix[adif]:
+            if band and band not in matrix[adif]:
                 return True, f'Ny {band}m'
         return False, ''
 
-    def count_atno(self) -> int:
-        """Antal DXCC-entiteter som saknas helt (ATNO)."""
+    def matrix_count(self, key='normal') -> int:
         with self._lock:
-            if not self._matrix:
-                return 0
-            # Matrix only contains worked entities — but we don't know total count.
-            # Clublog returns only needed entities, so len(_matrix) = needed count.
-            return sum(1 for v in self._matrix.values() if isinstance(v, dict) and not v)
+            return self._counts.get(key, 0)
+
+    def matrix_fetched_at(self, key='normal'):
+        with self._lock:
+            return self._fetched_at.get(key)
 
     def count_needed(self) -> int:
         """Totalt antal behövda bandplatser."""
@@ -386,6 +403,8 @@ class SpotBuffer:
 COND_TYPES = {
     'atno':             'ATNO (kräver Clublog)',
     'new_band':         'Ny bandländer (kräver Clublog)',
+    'sat_needed':       'Satellit-DXCC (kräver Clublog)',
+    'marathon':         'DX Marathon i år (kräver Clublog)',
     'wanted_call':      'Wanted callsign (kommasep.)',
     'not_call':         'Exkludera callsign (kommasep.)',
     'band':             'Band',
@@ -394,6 +413,14 @@ COND_TYPES = {
     'snr':              'Min SNR (dB)',
     'spotter_cont':     'Spotter kontinent',
     'spotter_dxcc':     'Spotter land (prefix, kommasep.)',
+}
+
+# Vilka villkorstyper kräver vilken matrisnyckel
+COND_MATRIX_KEY = {
+    'atno':      'normal',
+    'new_band':  'normal',
+    'sat_needed': 'sat',
+    'marathon':  'marathon',
 }
 
 BAND_OPTIONS     = ['160','80','60','40','30','20','17','15','12','10','6','2','AO100']
@@ -476,10 +503,16 @@ class RuleEngine:
     def _cond_ok(self, cond, call, freq_khz, snr, mode, source, spotter):
         t = cond.get('type', '')
         if t == 'atno':
-            _, reason = self._clublog.is_needed(call, freq_khz)
+            _, reason = self._clublog.is_needed(call, freq_khz, key='normal')
             return reason == 'ATNO'
         if t == 'new_band':
-            needed, _ = self._clublog.is_needed(call, freq_khz)
+            needed, _ = self._clublog.is_needed(call, freq_khz, key='normal')
+            return needed
+        if t == 'sat_needed':
+            needed, _ = self._clublog.is_needed(call, freq_khz, key='sat')
+            return needed
+        if t == 'marathon':
+            needed, _ = self._clublog.is_needed(call, freq_khz, key='marathon')
             return needed
         if t == 'wanted_call':
             calls = {c.strip().upper() for c in cond.get('value', '').split(',') if c.strip()}
@@ -847,9 +880,11 @@ class JTSpots(ctk.CTk):
         working = [dict(c) for c in rule.get('conditions', [])]
         value_getters = []
 
-        # Matris-rad (visas bara om regeln har atno/new_band)
-        def uses_clublog(conds):
-            return any(c.get('type') in ('atno', 'new_band') for c in conds)
+        # Matris-rad (visas bara om regeln har Clublog-villkor)
+        def clublog_keys_used(conds):
+            return list(dict.fromkeys(
+                COND_MATRIX_KEY[c['type']] for c in conds if c.get('type') in COND_MATRIX_KEY
+            ))
 
         cl_row = ctk.CTkFrame(dlg, fg_color='transparent')
         cl_row.pack(fill='x', padx=12, pady=(0, 4))
@@ -857,21 +892,32 @@ class JTSpots(ctk.CTk):
         lbl_cl.pack(side='left', padx=4)
 
         def _update_cl_label():
-            if uses_clublog(working):
-                n = self._clublog.entity_count
-                ts = self._clublog.last_fetch.strftime('%H:%M') if self._clublog.last_fetch else '—'
-                lbl_cl.configure(text=f'Matris: {n} enheter  |  Uppdaterad {ts}')
+            keys = clublog_keys_used(working)
+            if keys:
+                parts = []
+                for k in keys:
+                    n  = self._clublog.matrix_count(k)
+                    ts = self._clublog.matrix_fetched_at(k)
+                    ts_str = ts.strftime('%H:%M') if ts else '—'
+                    label = {'normal': 'DXCC', 'sat': 'Sat', 'marathon': 'Marathon'}[k]
+                    parts.append(f'{label}: {n} st ({ts_str})')
+                lbl_cl.configure(text='  |  '.join(parts))
                 btn_cl.pack(side='left', padx=4)
             else:
                 lbl_cl.configure(text='')
                 btn_cl.pack_forget()
 
         def _fetch_from_editor():
+            keys = clublog_keys_used(working)
             btn_cl.configure(state='disabled', text='Hämtar...')
-            self._fetch_clublog(on_done=lambda ok, msg: (
-                self.after(0, lambda: btn_cl.configure(state='normal', text='Uppdatera matris')),
-                self.after(0, _update_cl_label)
-            ))
+            remaining = [len(keys)]
+            def _done(ok, msg):
+                remaining[0] -= 1
+                if remaining[0] == 0:
+                    self.after(0, lambda: btn_cl.configure(state='normal', text='Uppdatera matris'))
+                    self.after(0, _update_cl_label)
+            for k in keys:
+                self._fetch_clublog(key=k, on_done=_done)
 
         btn_cl = ctk.CTkButton(cl_row, text='Uppdatera matris', width=140,
                                command=_fetch_from_editor)
@@ -897,7 +943,7 @@ class JTSpots(ctk.CTk):
                     v = ctk.BooleanVar(value=opt in selected_values)
                     ctk.CTkCheckBox(rf, text=opt, variable=v, width=46,
                                     checkbox_width=14, checkbox_height=14,
-                                    corner_radius=2,
+                                    corner_radius=2, border_width=1,
                                     font=ctk.CTkFont(size=10)).pack(side='left', padx=1)
                     vars_[opt] = v
             return lambda: ','.join(k for k, v in vars_.items() if v.get())
@@ -1193,7 +1239,7 @@ class JTSpots(ctk.CTk):
 
     # ── Clublog ───────────────────────────────────────────────────────────────
 
-    def _fetch_clublog(self, on_done=None):
+    def _fetch_clublog(self, key='normal', on_done=None):
         self._clublog.callsign = self._e_cl_call.get().strip()
         self._clublog.email    = self._e_cl_email.get().strip()
         self._clublog.password = self._e_cl_pass.get()
@@ -1202,7 +1248,7 @@ class JTSpots(ctk.CTk):
             self._on_clublog_done(ok, msg)
             if on_done:
                 on_done(ok, msg)
-        self._clublog.fetch_matrix(on_done=combined)
+        self._clublog.fetch_matrix(key=key, on_done=combined)
 
     def _on_clublog_done(self, ok, msg):
         self.after(0, lambda: self._log_line(f'Clublog: {msg}'))
