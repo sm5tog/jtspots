@@ -17,6 +17,7 @@ import customtkinter as ctk
 SETTINGS_FILE   = Path(__file__).parent / 'jtspots_settings.json'
 MATRIX_CACHE    = Path(__file__).parent / 'jtspots_matrix_cache.json'
 EXPEDITION_LOG  = Path(__file__).parent / 'jtspots_expedition_log.json'
+DXNEWS_CACHE    = Path(__file__).parent / 'jtspots_dxnews_cache.json'
 
 from jtspots_collect import fetch_dx_news
 
@@ -813,9 +814,11 @@ class JTSpots(ctk.CTk):
         self._selected_idx  = None  # vald server i listan
         self._adif_listener = None
 
+        self._dxnews_cache = {'union': set(), 'special': set(), 'fetched_at': None}
         self._build_ui()
         self._clublog.load_cache(MATRIX_CACHE)
         self._exp_log.load(EXPEDITION_LOG)
+        self._load_dxnews_cache()
         self._load_settings()
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self.after(2000, self._tick)
@@ -1201,13 +1204,26 @@ class JTSpots(ctk.CTk):
                                                  font=ctk.CTkFont(size=10))
                         lbl_fetch.grid(row=1, column=0, sticky='w')
 
+                        # Visa cache-tidsstämpel om finns
+                        cached_at = self._dxnews_cache.get('fetched_at')
+                        if cached_at:
+                            try:
+                                ts = datetime.fromisoformat(cached_at).strftime('%y%m%d %H:%M')
+                                lbl_fetch.configure(text=f'Cache: {ts}')
+                            except Exception:
+                                pass
+
                         def _fetch_live(entry=e, lbl=lbl_fetch, kind='union'):
                             lbl.configure(text='Hämtar...')
                             def _done(union, specials, err):
                                 calls = union if kind == 'union' else specials
+                                self._dxnews_cache['union']   = union
+                                self._dxnews_cache['special'] = specials
+                                self._save_dxnews_cache()
                                 self.after(0, lambda: entry.delete(0, 'end'))
                                 self.after(0, lambda: entry.insert(0, ','.join(sorted(calls))))
-                                msg = f'{len(calls)} anrop' + (f' (fel: {err})' if err else '')
+                                ts = datetime.now().strftime('%y%m%d %H:%M')
+                                msg = f'{len(calls)} anrop ({ts})' + (f' — fel: {err}' if err else '')
                                 self.after(0, lambda m=msg: lbl.configure(text=m))
                             fetch_dx_news(on_done=_done)
 
@@ -1512,6 +1528,28 @@ class JTSpots(ctk.CTk):
         self.after(0, lambda: self._lbl_cl_status.configure(text=msg, text_color=color))
         if ok:
             self._clublog.save_cache(MATRIX_CACHE)
+
+    # ── DX News cache ────────────────────────────────────────────────────────
+
+    def _load_dxnews_cache(self):
+        try:
+            d = json.loads(DXNEWS_CACHE.read_text(encoding='utf-8'))
+            self._dxnews_cache['union']      = set(d.get('union', []))
+            self._dxnews_cache['special']    = set(d.get('special', []))
+            self._dxnews_cache['fetched_at'] = d.get('fetched_at')
+        except Exception:
+            pass
+
+    def _save_dxnews_cache(self):
+        try:
+            d = {
+                'union':      sorted(self._dxnews_cache['union']),
+                'special':    sorted(self._dxnews_cache['special']),
+                'fetched_at': datetime.now().isoformat(),
+            }
+            DXNEWS_CACHE.write_text(json.dumps(d), encoding='utf-8')
+        except Exception:
+            pass
 
     # ── ADIF UDP-toggle + QSO-hantering ─────────────────────────────────────
 
