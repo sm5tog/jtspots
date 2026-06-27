@@ -253,7 +253,7 @@ class ClublogClient:
                 return True, ''
         adif = self.get_dxcc(callsign)
         if not adif:
-            return True, '?DXCC'
+            return False, ''  # DXCC-lookup misslyckades — blockera, visa inte
         band = freq_to_band(freq_khz)
         with self._lock:
             matrix = self._matrices.get(key, {})
