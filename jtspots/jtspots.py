@@ -814,9 +814,9 @@ class JTSpots(ctk.CTk):
         self._adif_listener = None
 
         self._build_ui()
-        self._load_settings()
         self._clublog.load_cache(MATRIX_CACHE)
         self._exp_log.load(EXPEDITION_LOG)
+        self._load_settings()
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self.after(2000, self._tick)
         self.after(100, self._start)
