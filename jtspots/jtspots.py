@@ -114,8 +114,9 @@ def freq_to_band(freq_khz: float) -> str:
     if 21000  <= f <= 21450:  return '15'
     if 24890  <= f <= 24990:  return '12'
     if 28000  <= f <= 29700:  return '10'
-    if 50000  <= f <= 54000:  return '6'
-    if 144000 <= f <= 148000: return '2'
+    if 50000   <= f <= 54000:   return '6'
+    if 144000  <= f <= 148000:  return '2'
+    if 10450000 <= f <= 10500000: return 'AO100'
     return ''
 
 
@@ -361,39 +362,96 @@ class SpotBuffer:
 # ── Filterregler ──────────────────────────────────────────────────────────────
 
 COND_TYPES = {
-    'atno':        'ATNO (kräver Clublog)',
-    'new_band':    'Ny bandländer (kräver Clublog)',
-    'wanted_call': 'Wanted callsign (kommasep.)',
-    'not_call':    'Exkludera callsign (kommasep.)',
-    'band':        'Band',
-    'mode':        'Mode',
-    'source':      'Källa',
-    'snr':         'Min SNR (dB)',
+    'atno':             'ATNO (kräver Clublog)',
+    'new_band':         'Ny bandländer (kräver Clublog)',
+    'wanted_call':      'Wanted callsign (kommasep.)',
+    'not_call':         'Exkludera callsign (kommasep.)',
+    'band':             'Band',
+    'mode':             'Mode',
+    'source':           'Källa',
+    'snr':              'Min SNR (dB)',
+    'spotter_cont':     'Spotter kontinent',
+    'spotter_dxcc':     'Spotter land (prefix, kommasep.)',
 }
 
-BAND_OPTIONS   = ['160','80','60','40','30','20','17','15','12','10','6','2']
-MODE_OPTIONS   = ['CW','SSB','FT8','FT4','RTTY','FM']
-SOURCE_OPTIONS = [('WSJT-X','wsjt'), ('Cluster','cluster')]
+BAND_OPTIONS     = ['160','80','60','40','30','20','17','15','12','10','6','2','AO100']
+BAND_ROWS        = [['160','80','60','40','30','20','17'],['15','12','10','6','2','AO100']]
+MODE_OPTIONS     = ['CW','SSB','FT8','FT4','RTTY','FM']
+SOURCE_OPTIONS   = [('WSJT-X','wsjt'), ('Cluster','cluster')]
+CONT_OPTIONS     = ['EU','NA','SA','AF','AS','OC','AN']
+
+# Prefix → kontinent (longest-match, sorted by length desc at lookup time)
+_PFX_CONT = {
+    'SM':'EU','OH':'EU','LA':'EU','OZ':'EU','TF':'EU','EI':'EU','GW':'EU','GI':'EU',
+    'GM':'EU','GD':'EU','GJ':'EU','GU':'EU','G':'EU','F':'EU','HB':'EU','HB0':'EU',
+    'OE':'EU','LX':'EU','ON':'EU','PA':'EU','DL':'EU','DA':'EU','DB':'EU','DC':'EU',
+    'DD':'EU','DF':'EU','DG':'EU','DH':'EU','DJ':'EU','DK':'EU','DM':'EU','DO':'EU',
+    'DP':'EU','DQ':'EU','DR':'EU','SP':'EU','SQ':'EU','SR':'EU','OK':'EU','OL':'EU',
+    'OM':'EU','HA':'EU','HG':'EU','YO':'EU','S5':'EU','9A':'EU','YU':'EU','YT':'EU',
+    'E7':'EU','T9':'EU','Z6':'EU','ZA':'EU','Z3':'EU','LZ':'EU','SV':'EU','I':'EU',
+    'IS':'EU','EA':'EU','EB':'EU','EC':'EU','ED':'EU','EE':'EU','EF':'EU','EG':'EU',
+    'EH':'EU','CT':'EU','CQ':'EU','CS':'EU','UA1':'EU','UA2':'EU','UA3':'EU',
+    'UA4':'EU','UA6':'EU','EW':'EU','ER':'EU','LY':'EU','YL':'EU','ES':'EU',
+    'UR':'EU','UT':'EU','UV':'EU','UW':'EU','UX':'EU','UY':'EU','UZ':'EU',
+    'OY':'EU','TK':'EU','JW':'EU','JX':'EU','OX':'EU','TA':'EU','YM':'EU',
+    'K':'NA','W':'NA','N':'NA','VE':'NA','VA':'NA','VO':'NA','VY':'NA',
+    'XE':'NA','TI':'NA','HR':'NA','YN':'NA','TG':'NA','HP':'NA','HH':'NA',
+    'HI':'NA','CM':'NA','CO':'NA','KP':'NA','KG4':'NA','V3':'NA','ZF':'NA',
+    'PY':'SA','PP':'SA','PQ':'SA','PR':'SA','PS':'SA','PT':'SA','PU':'SA',
+    'LU':'SA','CE':'SA','HC':'SA','HK':'SA','OA':'SA','CP':'SA','ZP':'SA',
+    'CX':'SA','PZ':'SA','YV':'SA','YW':'SA','8R':'SA','9Y':'SA','FY':'SA',
+    'ZS':'AF','ZR':'AF','ZT':'AF','ZU':'AF','CN':'AF','7X':'AF','5A':'AF',
+    'ST':'AF','SU':'AF','5Z':'AF','ET':'AF','9J':'AF','9Q':'AF','9U':'AF',
+    'TJ':'AF','5H':'AF','V5':'AF','A2':'AF','EL':'AF','5N':'AF','9G':'AF',
+    '6W':'AF','TU':'AF','TL':'AF','TT':'AF','TR':'AF','9L':'AF','3X':'AF',
+    'D4':'AF','C5':'AF','C9':'AF','7P':'AF','7Q':'AF','5V':'AF','EA8':'AF',
+    'JA':'AS','JH':'AS','JE':'AS','JF':'AS','JG':'AS','JI':'AS','JJ':'AS',
+    'JK':'AS','JL':'AS','JM':'AS','JN':'AS','JO':'AS','JP':'AS','JR':'AS',
+    'BY':'AS','BA':'AS','BG':'AS','BT':'AS','BV':'AS','HL':'AS','DS':'AS',
+    'UA9':'AS','UA0':'AS','UN':'AS','UP':'AS','UQ':'AS','EP':'AS','EQ':'AS',
+    'EK':'AS','A4':'AS','A6':'AS','A7':'AS','A9':'AS','9K':'AS','YI':'AS',
+    '4X':'AS','4Z':'AS','VU':'AS','AT':'AS','AP':'AS','S2':'AS','9N':'AS',
+    'XW':'AS','XV':'AS','XU':'AS','HS':'AS','E2':'AS','9M':'AS','YB':'AS',
+    'DU':'AS','DV':'AS','DX':'AS','JT':'AS','OD':'AS','YK':'AS',
+    'VK':'OC','AX':'OC','ZL':'OC','ZM':'OC','YJ':'OC','T2':'OC','A3':'OC',
+    'H4':'OC','P2':'OC','VR':'OC','FK':'OC','FO':'OC','FW':'OC','T3':'OC',
+    'V6':'OC','V7':'OC','3D2':'OC','E5':'OC','KH':'OC',
+    'VP8':'AN','CE9':'AN','DP0':'AN','VK0':'AN',
+}
+
+def _spotter_continent(call: str) -> str:
+    c = re.sub(r'/.*$', '', call.upper().strip())
+    for n in (4, 3, 2, 1):
+        if c[:n] in _PFX_CONT:
+            return _PFX_CONT[c[:n]]
+    return ''
+
+def _spotter_prefix(call: str) -> str:
+    c = re.sub(r'/.*$', '', call.upper().strip())
+    for n in (4, 3, 2, 1):
+        if c[:n] in _PFX_CONT:
+            return c[:n]
+    return c[:2]
 
 class RuleEngine:
     def __init__(self, clublog):
         self._clublog = clublog
 
-    def evaluate(self, call, freq_khz, snr, mode, rules, source=''):
+    def evaluate(self, call, freq_khz, snr, mode, rules, source='', spotter=''):
         """Returns (passed, rule_name). If no active rules: pass all."""
         active = [r for r in rules if r.get('enabled', True)]
         if not active:
             return True, ''
         for rule in active:
-            if self._matches(rule, call, freq_khz, snr, mode, source):
+            if self._matches(rule, call, freq_khz, snr, mode, source, spotter):
                 return True, rule.get('name', '')
         return False, ''
 
-    def _matches(self, rule, call, freq_khz, snr, mode, source):
-        return all(self._cond_ok(c, call, freq_khz, snr, mode, source)
+    def _matches(self, rule, call, freq_khz, snr, mode, source, spotter):
+        return all(self._cond_ok(c, call, freq_khz, snr, mode, source, spotter)
                    for c in rule.get('conditions', []))
 
-    def _cond_ok(self, cond, call, freq_khz, snr, mode, source):
+    def _cond_ok(self, cond, call, freq_khz, snr, mode, source, spotter):
         t = cond.get('type', '')
         if t == 'atno':
             _, reason = self._clublog.is_needed(call, freq_khz)
@@ -416,6 +474,12 @@ class RuleEngine:
         if t == 'source':
             sources = {s.strip().lower() for s in cond.get('value', '').split(',') if s.strip()}
             return not sources or source.lower() in sources
+        if t == 'spotter_cont':
+            conts = {c.strip().upper() for c in cond.get('value', '').split(',') if c.strip()}
+            return not conts or _spotter_continent(spotter) in conts
+        if t == 'spotter_dxcc':
+            pfxs = {p.strip().upper() for p in cond.get('value', '').split(',') if p.strip()}
+            return not pfxs or _spotter_prefix(spotter) in pfxs
         if t == 'snr':
             try:
                 return snr >= int(cond.get('value', '-99'))
@@ -752,7 +816,7 @@ class JTSpots(ctk.CTk):
     def _open_rule_editor(self, rule):
         dlg = ctk.CTkToplevel(self)
         dlg.title('Redigera regel')
-        dlg.geometry('560x520')
+        dlg.geometry('640x560')
         dlg.grab_set()
 
         # Namn
@@ -773,15 +837,21 @@ class JTSpots(ctk.CTk):
         working = [dict(c) for c in rule.get('conditions', [])]
         value_getters = []   # list of (cond, callable -> str)
 
-        def make_checkbox_row(parent, options, selected_values, row):
-            """Render compact checkboxes; return getter."""
+        def make_checkbox_row(parent, options, selected_values, row, rows=None):
+            """Render checkboxes, optionally split over multiple rows."""
             f = ctk.CTkFrame(parent, fg_color='transparent')
             f.grid(row=row, column=1, sticky='w', padx=4, pady=2)
             vars_ = {}
-            for opt in options:
-                v = ctk.BooleanVar(value=opt in selected_values)
-                ctk.CTkCheckBox(f, text=opt, variable=v, width=60).pack(side='left', padx=2)
-                vars_[opt] = v
+            groups = rows if rows else [options]
+            for r, grp in enumerate(groups):
+                rf = ctk.CTkFrame(f, fg_color='transparent')
+                rf.pack(fill='x')
+                for opt in grp:
+                    v = ctk.BooleanVar(value=opt in selected_values)
+                    ctk.CTkCheckBox(rf, text=opt, variable=v, width=60,
+                                    checkbox_width=18, checkbox_height=18,
+                                    font=ctk.CTkFont(size=11)).pack(side='left', padx=2)
+                    vars_[opt] = v
             return lambda: ','.join(k for k, v in vars_.items() if v.get())
 
         def refresh():
@@ -799,7 +869,7 @@ class JTSpots(ctk.CTk):
                 selected = {v.strip() for v in val.split(',') if v.strip()}
 
                 if t == 'band':
-                    getter = make_checkbox_row(cond_frame, BAND_OPTIONS, selected, i)
+                    getter = make_checkbox_row(cond_frame, BAND_OPTIONS, selected, i, BAND_ROWS)
                     value_getters.append((cond, getter))
                 elif t == 'mode':
                     getter = make_checkbox_row(cond_frame, MODE_OPTIONS, selected, i)
@@ -808,10 +878,12 @@ class JTSpots(ctk.CTk):
                     getter = make_checkbox_row(
                         cond_frame, [lbl for lbl, _ in SOURCE_OPTIONS],
                         {lbl for lbl, key in SOURCE_OPTIONS if key in selected}, i)
-                    # wrap to map labels back to keys
                     lbl_to_key = {lbl: key for lbl, key in SOURCE_OPTIONS}
                     value_getters.append((cond, lambda g=getter: ','.join(
                         lbl_to_key[x] for x in g().split(',') if x in lbl_to_key)))
+                elif t == 'spotter_cont':
+                    getter = make_checkbox_row(cond_frame, CONT_OPTIONS, selected, i)
+                    value_getters.append((cond, getter))
                 elif t in ('wanted_call', 'not_call', 'snr'):
                     e = ctk.CTkEntry(cond_frame, width=200)
                     e.insert(0, val)
@@ -920,6 +992,11 @@ class JTSpots(ctk.CTk):
         self._lbl_status.configure(text='Aktiv')
         self._btn.configure(text='Stoppa')
         self._log_line(f'=== Startad — UDP {mcast}:{uport}  |  Telnet 127.0.0.1:{tport} ===')
+        for cfg in self._cluster_cfgs:
+            if cfg.get('autoconnect'):
+                client = ClusterClient(cfg, self._on_cluster_line, self._on_cluster_status)
+                self._clusters.append(client)
+                client.connect()
 
     def _stop(self):
         if self._udp:    self._udp.stop()
@@ -998,10 +1075,12 @@ class JTSpots(ctk.CTk):
         if existing and existing.connected:
             existing.disconnect()
             self._clusters.remove(existing)
+            cfg['autoconnect'] = False
             self._btn_connect.configure(text='Koppla upp')
         else:
             self._cluster_save()
             cfg = self._cluster_cfgs[self._selected_idx]
+            cfg['autoconnect'] = True
             client = ClusterClient(cfg, self._on_cluster_line, self._on_cluster_status)
             self._clusters.append(client)
             client.connect()
@@ -1030,14 +1109,16 @@ class JTSpots(ctk.CTk):
                 if self._buffer.is_duplicate(call, freq_to_band(freq_khz)):
                     return
             mode_cl = mode_from_freq(freq_khz)
-            out = (f'DX de {spotter.rstrip(":")+":":<11}{freq_khz:>9.1f}  '
+            spotter_call = spotter.rstrip(':')
+            out = (f'DX de {spotter_call+":":<11}{freq_khz:>9.1f}  '
                    f'{call:<13} {comment:<20} {utc}')
             spot = {'call': call, 'freq_khz': freq_khz, 'snr': -99,
-                    'mode': mode_cl, 'line': out, 'source': 'cluster'}
+                    'mode': mode_cl, 'line': out, 'source': 'cluster',
+                    'spotter': spotter_call}
             self._spot_log.append(spot)
             if len(self._spot_log) > 1000:
                 self._spot_log.pop(0)
-            passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules, 'cluster')
+            passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules, 'cluster', spotter_call)
             if passed and self._telnet:
                 self._telnet.send_spot(out)
             self._spot_count += 1
@@ -1099,7 +1180,7 @@ class JTSpots(ctk.CTk):
             if self._buffer.is_duplicate(callsign, freq_to_band(freq_khz)):
                 return
 
-        passed, rule_name = self._engine.evaluate(callsign, freq_khz, snr, mode, self._rules, 'wsjt')
+        passed, rule_name = self._engine.evaluate(callsign, freq_khz, snr, mode, self._rules, 'wsjt', self._e_call.get().strip())
         if not passed:
             return
 
@@ -1155,7 +1236,8 @@ class JTSpots(ctk.CTk):
         self._log_flt.configure(state='disabled')
         for s in self._spot_log:
             passed, rule_name = self._engine.evaluate(
-                s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules, s.get('source',''))
+                s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules,
+                s.get('source',''), s.get('spotter',''))
             if passed:
                 suffix = f' [{rule_name}]' if rule_name else ''
                 self._append_to_box(self._log_flt, s['line'] + suffix, tag=s['source'])
