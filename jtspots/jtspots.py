@@ -1505,7 +1505,9 @@ class JTSpots(ctk.CTk):
         self._exp_log.add_qso(call, band, mode)
         if call not in known:
             self.after(0, lambda c=call: self._log_line(f'ADIF: ny expedition spårad — {c}'))
-        self._exp_log.save(EXPEDITION_LOG)
+        if not hasattr(self, '_exp_last_save') or time.time() - self._exp_last_save > 10:
+            self._exp_log.save(EXPEDITION_LOG)
+            self._exp_last_save = time.time()
 
     # ── WSJT-X pakethantering ─────────────────────────────────────────────────
 
@@ -1578,7 +1580,7 @@ class JTSpots(ctk.CTk):
         now = time.time()
         for c in self._clusters:
             if c.connected and (now - c._last_tx) > 180:
-                c.keepalive()
+                threading.Thread(target=c.keepalive, daemon=True).start()
         self.after(2000, self._tick)
 
     def _append_to_box(self, box, text, tag=None):
