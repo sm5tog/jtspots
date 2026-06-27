@@ -364,46 +364,58 @@ COND_TYPES = {
     'atno':        'ATNO (kräver Clublog)',
     'new_band':    'Ny bandländer (kräver Clublog)',
     'wanted_call': 'Wanted callsign (kommasep.)',
-    'band':        'Band (kommasep. t.ex. 6,2)',
-    'mode':        'Mode (kommasep. t.ex. FT8,CW)',
+    'not_call':    'Exkludera callsign (kommasep.)',
+    'band':        'Band',
+    'mode':        'Mode',
+    'source':      'Källa',
     'snr':         'Min SNR (dB)',
 }
+
+BAND_OPTIONS   = ['160','80','60','40','30','20','17','15','12','10','6','2']
+MODE_OPTIONS   = ['CW','SSB','FT8','FT4','RTTY','FM']
+SOURCE_OPTIONS = [('WSJT-X','wsjt'), ('Cluster','cluster')]
 
 class RuleEngine:
     def __init__(self, clublog):
         self._clublog = clublog
 
-    def evaluate(self, call, freq_khz, snr, mode, rules):
+    def evaluate(self, call, freq_khz, snr, mode, rules, source=''):
         """Returns (passed, rule_name). If no active rules: pass all."""
         active = [r for r in rules if r.get('enabled', True)]
         if not active:
             return True, ''
         for rule in active:
-            if self._matches(rule, call, freq_khz, snr, mode):
+            if self._matches(rule, call, freq_khz, snr, mode, source):
                 return True, rule.get('name', '')
         return False, ''
 
-    def _matches(self, rule, call, freq_khz, snr, mode):
-        return all(self._cond_ok(c, call, freq_khz, snr, mode)
+    def _matches(self, rule, call, freq_khz, snr, mode, source):
+        return all(self._cond_ok(c, call, freq_khz, snr, mode, source)
                    for c in rule.get('conditions', []))
 
-    def _cond_ok(self, cond, call, freq_khz, snr, mode):
+    def _cond_ok(self, cond, call, freq_khz, snr, mode, source):
         t = cond.get('type', '')
         if t == 'atno':
             _, reason = self._clublog.is_needed(call, freq_khz)
             return reason == 'ATNO'
         if t == 'new_band':
-            needed, reason = self._clublog.is_needed(call, freq_khz)
+            needed, _ = self._clublog.is_needed(call, freq_khz)
             return needed
         if t == 'wanted_call':
             calls = {c.strip().upper() for c in cond.get('value', '').split(',') if c.strip()}
             return call.upper() in calls
+        if t == 'not_call':
+            calls = {c.strip().upper() for c in cond.get('value', '').split(',') if c.strip()}
+            return call.upper() not in calls
         if t == 'band':
             bands = {b.strip() for b in cond.get('value', '').split(',') if b.strip()}
             return freq_to_band(freq_khz) in bands
         if t == 'mode':
             modes = {m.strip().upper() for m in cond.get('value', '').split(',') if m.strip()}
             return mode.upper() in modes
+        if t == 'source':
+            sources = {s.strip().lower() for s in cond.get('value', '').split(',') if s.strip()}
+            return not sources or source.lower() in sources
         if t == 'snr':
             try:
                 return snr >= int(cond.get('value', '-99'))
@@ -687,26 +699,42 @@ class JTSpots(ctk.CTk):
     def _refresh_rule_list(self):
         for w in self._rule_frame.winfo_children():
             w.destroy()
+        self._rule_frame.columnconfigure(2, weight=1)
         for i, rule in enumerate(self._rules):
+            # Upp/ned
+            ctk.CTkButton(self._rule_frame, text='↑', width=28,
+                          command=lambda idx=i: self._move_rule(idx, -1)).grid(
+                row=i, column=0, padx=(2, 0), pady=2)
+            ctk.CTkButton(self._rule_frame, text='↓', width=28,
+                          command=lambda idx=i: self._move_rule(idx, 1)).grid(
+                row=i, column=1, padx=(0, 2), pady=2)
+            # Checkbox
             var = ctk.BooleanVar(value=rule.get('enabled', True))
             def on_toggle(v=var, r=rule):
                 r['enabled'] = v.get()
                 self._rerender_filtered()
             ctk.CTkCheckBox(self._rule_frame, text='', variable=var, width=30,
-                            command=on_toggle
-                            ).grid(row=i, column=0, padx=(4, 0), pady=2)
+                            command=on_toggle).grid(row=i, column=2, padx=2, pady=2)
+            # Namn + villkorssammanfattning
             cond_summary = ', '.join(COND_TYPES.get(c['type'], c['type'])
                                      for c in rule.get('conditions', []))
             label = f"{rule.get('name','?')}  —  {cond_summary}" if cond_summary else rule.get('name', '?')
             ctk.CTkLabel(self._rule_frame, text=label, anchor='w').grid(
-                row=i, column=1, sticky='w', padx=6, pady=2)
+                row=i, column=3, sticky='w', padx=6, pady=2)
             ctk.CTkButton(self._rule_frame, text='Redigera', width=80,
                           command=lambda r=rule: self._open_rule_editor(r)).grid(
-                row=i, column=2, padx=4, pady=2)
+                row=i, column=4, padx=4, pady=2)
             ctk.CTkButton(self._rule_frame, text='Ta bort', width=75,
                           fg_color='#662222', hover_color='#882222',
                           command=lambda r=rule: self._delete_rule(r)).grid(
-                row=i, column=3, padx=4, pady=2)
+                row=i, column=5, padx=4, pady=2)
+
+    def _move_rule(self, idx, direction):
+        new_idx = idx + direction
+        if 0 <= new_idx < len(self._rules):
+            self._rules[idx], self._rules[new_idx] = self._rules[new_idx], self._rules[idx]
+            self._refresh_rule_list()
+            self._rerender_filtered()
 
     def _add_rule(self):
         rule = {'id': str(time.monotonic()), 'name': 'Ny regel',
@@ -719,52 +747,84 @@ class JTSpots(ctk.CTk):
         if rule in self._rules:
             self._rules.remove(rule)
         self._refresh_rule_list()
+        self._rerender_filtered()
 
     def _open_rule_editor(self, rule):
         dlg = ctk.CTkToplevel(self)
         dlg.title('Redigera regel')
-        dlg.geometry('520x480')
+        dlg.geometry('560x520')
         dlg.grab_set()
 
         # Namn
         nf = ctk.CTkFrame(dlg, fg_color='transparent')
         nf.pack(fill='x', padx=12, pady=8)
         ctk.CTkLabel(nf, text='Namn:', width=60).pack(side='left')
-        e_name = ctk.CTkEntry(nf, width=320)
+        e_name = ctk.CTkEntry(nf, width=340)
         e_name.insert(0, rule.get('name', ''))
         e_name.pack(side='left', padx=4)
 
         ctk.CTkLabel(dlg, text='Villkor  (AND — alla måste stämma):',
                      anchor='w').pack(fill='x', padx=12, pady=(4, 2))
 
-        cond_frame = ctk.CTkScrollableFrame(dlg, height=240)
+        cond_frame = ctk.CTkScrollableFrame(dlg, height=280)
         cond_frame.pack(fill='both', expand=True, padx=12, pady=4)
         cond_frame.columnconfigure(1, weight=1)
 
         working = [dict(c) for c in rule.get('conditions', [])]
-        entry_refs = []
+        value_getters = []   # list of (cond, callable -> str)
+
+        def make_checkbox_row(parent, options, selected_values, row):
+            """Render compact checkboxes; return getter."""
+            f = ctk.CTkFrame(parent, fg_color='transparent')
+            f.grid(row=row, column=1, sticky='w', padx=4, pady=2)
+            vars_ = {}
+            for opt in options:
+                v = ctk.BooleanVar(value=opt in selected_values)
+                ctk.CTkCheckBox(f, text=opt, variable=v, width=60).pack(side='left', padx=2)
+                vars_[opt] = v
+            return lambda: ','.join(k for k, v in vars_.items() if v.get())
 
         def refresh():
-            nonlocal entry_refs
-            entry_refs = []
+            nonlocal value_getters
+            value_getters = []
             for w in cond_frame.winfo_children():
                 w.destroy()
             for i, cond in enumerate(working):
-                lbl = COND_TYPES.get(cond['type'], cond['type'])
-                ctk.CTkLabel(cond_frame, text=lbl, anchor='w', width=210).grid(
-                    row=i, column=0, sticky='w', padx=4, pady=3)
-                if cond['type'] in ('band', 'mode', 'wanted_call', 'snr'):
-                    e = ctk.CTkEntry(cond_frame, width=160)
-                    e.insert(0, cond.get('value', ''))
-                    e.grid(row=i, column=1, sticky='ew', padx=4, pady=3)
-                    entry_refs.append((cond, e))
+                t   = cond.get('type', '')
+                lbl = COND_TYPES.get(t, t)
+                ctk.CTkLabel(cond_frame, text=lbl, anchor='w', width=190).grid(
+                    row=i, column=0, sticky='nw', padx=4, pady=4)
+
+                val = cond.get('value', '')
+                selected = {v.strip() for v in val.split(',') if v.strip()}
+
+                if t == 'band':
+                    getter = make_checkbox_row(cond_frame, BAND_OPTIONS, selected, i)
+                    value_getters.append((cond, getter))
+                elif t == 'mode':
+                    getter = make_checkbox_row(cond_frame, MODE_OPTIONS, selected, i)
+                    value_getters.append((cond, getter))
+                elif t == 'source':
+                    getter = make_checkbox_row(
+                        cond_frame, [lbl for lbl, _ in SOURCE_OPTIONS],
+                        {lbl for lbl, key in SOURCE_OPTIONS if key in selected}, i)
+                    # wrap to map labels back to keys
+                    lbl_to_key = {lbl: key for lbl, key in SOURCE_OPTIONS}
+                    value_getters.append((cond, lambda g=getter: ','.join(
+                        lbl_to_key[x] for x in g().split(',') if x in lbl_to_key)))
+                elif t in ('wanted_call', 'not_call', 'snr'):
+                    e = ctk.CTkEntry(cond_frame, width=200)
+                    e.insert(0, val)
+                    e.grid(row=i, column=1, sticky='ew', padx=4, pady=4)
+                    value_getters.append((cond, e.get))
                 else:
                     ctk.CTkLabel(cond_frame, text='').grid(row=i, column=1)
-                    entry_refs.append((cond, None))
+                    value_getters.append((cond, lambda: ''))
+
                 ctk.CTkButton(cond_frame, text='✕', width=32,
                               fg_color='#662222', hover_color='#882222',
                               command=lambda c=cond: (working.remove(c), refresh())
-                              ).grid(row=i, column=2, padx=4, pady=3)
+                              ).grid(row=i, column=2, padx=4, pady=4)
 
         refresh()
 
@@ -773,7 +833,7 @@ class JTSpots(ctk.CTk):
         add_row.pack(fill='x', padx=12, pady=4)
         cond_var = ctk.StringVar(value=list(COND_TYPES.values())[0])
         ctk.CTkOptionMenu(add_row, variable=cond_var,
-                          values=list(COND_TYPES.values()), width=280).pack(side='left', padx=(0, 8))
+                          values=list(COND_TYPES.values()), width=290).pack(side='left', padx=(0, 8))
 
         def add_cond():
             key = next(k for k, v in COND_TYPES.items() if v == cond_var.get())
@@ -787,12 +847,12 @@ class JTSpots(ctk.CTk):
         btn_row.pack(fill='x', padx=12, pady=8)
 
         def save():
-            for cond, entry in entry_refs:
-                if entry is not None:
-                    cond['value'] = entry.get()
+            for cond, getter in value_getters:
+                cond['value'] = getter()
             rule['name']       = e_name.get().strip() or 'Namnlös regel'
             rule['conditions'] = working
             self._refresh_rule_list()
+            self._rerender_filtered()
             dlg.destroy()
 
         ctk.CTkButton(btn_row, text='Spara', width=100, command=save).pack(side='left', padx=(0, 8))
@@ -977,7 +1037,7 @@ class JTSpots(ctk.CTk):
             self._spot_log.append(spot)
             if len(self._spot_log) > 1000:
                 self._spot_log.pop(0)
-            passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules)
+            passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules, 'cluster')
             if passed and self._telnet:
                 self._telnet.send_spot(out)
             self._spot_count += 1
@@ -1039,7 +1099,7 @@ class JTSpots(ctk.CTk):
             if self._buffer.is_duplicate(callsign, freq_to_band(freq_khz)):
                 return
 
-        passed, rule_name = self._engine.evaluate(callsign, freq_khz, snr, mode, self._rules)
+        passed, rule_name = self._engine.evaluate(callsign, freq_khz, snr, mode, self._rules, 'wsjt')
         if not passed:
             return
 
@@ -1095,7 +1155,7 @@ class JTSpots(ctk.CTk):
         self._log_flt.configure(state='disabled')
         for s in self._spot_log:
             passed, rule_name = self._engine.evaluate(
-                s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules)
+                s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules, s.get('source',''))
             if passed:
                 suffix = f' [{rule_name}]' if rule_name else ''
                 self._append_to_box(self._log_flt, s['line'] + suffix, tag=s['source'])
