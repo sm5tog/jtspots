@@ -741,7 +741,7 @@ class JTSpots(ctk.CTk):
     def _on_cluster_line(self, line):
         m = _SPOT_RE.match(line)
         if m:
-            _spotter, freq_str, call, comment, utc = m.groups()
+            spotter, freq_str, call, comment, utc = m.groups()
             try:
                 freq_khz = float(freq_str)
             except ValueError:
@@ -755,10 +755,12 @@ class JTSpots(ctk.CTk):
                 needed, _ = self._clublog.is_needed(call, freq_khz)
                 if not needed:
                     return
+            out = (f'DX de {spotter.rstrip(":")+":":<11}{freq_khz:>9.1f}  '
+                   f'{call:<13} {comment:<20} {utc}')
             if self._telnet:
-                self._telnet.send_spot(line)
+                self._telnet.send_spot(out)
             self._spot_count += 1
-            self.after(0, lambda l=line: self._log_line(l, tag='cluster'))
+            self.after(0, lambda l=out: self._log_line(l, tag='cluster'))
         else:
             self.after(0, lambda l=line: self._log_line(f'  {l}'))
 
