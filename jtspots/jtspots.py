@@ -240,6 +240,22 @@ class ClublogClient:
                 return True, f'Ny {band}m'
         return False, ''
 
+    def count_atno(self) -> int:
+        """Antal DXCC-entiteter som saknas helt (ATNO)."""
+        with self._lock:
+            if not self._matrix:
+                return 0
+            # Matrix only contains worked entities — but we don't know total count.
+            # Clublog returns only needed entities, so len(_matrix) = needed count.
+            return sum(1 for v in self._matrix.values() if isinstance(v, dict) and not v)
+
+    def count_needed(self) -> int:
+        """Totalt antal behövda bandplatser."""
+        with self._lock:
+            if not self._matrix:
+                return 0
+            return self.entity_count
+
     @property
     def ready(self) -> bool:
         with self._lock:
@@ -727,13 +743,8 @@ class JTSpots(ctk.CTk):
         self._e_cl_api = ctk.CTkEntry(tab, width=200, show='*')
         self._e_cl_api.grid(row=3, column=1, sticky='w', padx=4, pady=3)
 
-        br = ctk.CTkFrame(tab, fg_color='transparent')
-        br.grid(row=4, column=0, columnspan=3, sticky='w', padx=4, pady=(4, 6))
-        ctk.CTkButton(br, text='Hämta matris', width=120,
-                      command=self._fetch_clublog).pack(side='left', padx=4)
-        self._lbl_cl_status = ctk.CTkLabel(br, text='Ingen matris hämtad',
-                                            text_color='gray')
-        self._lbl_cl_status.pack(side='left', padx=8)
+        self._lbl_cl_status = ctk.CTkLabel(tab, text='', text_color='gray')
+        self._lbl_cl_status.grid(row=4, column=0, columnspan=3, sticky='w', padx=8, pady=4)
 
     def _build_filter_tab(self, tab):
         tab.columnconfigure(0, weight=1)
@@ -829,9 +840,39 @@ class JTSpots(ctk.CTk):
         nf = ctk.CTkFrame(dlg, fg_color='transparent')
         nf.pack(fill='x', padx=12, pady=8)
         ctk.CTkLabel(nf, text='Namn:', width=60).pack(side='left')
-        e_name = ctk.CTkEntry(nf, width=340)
+        e_name = ctk.CTkEntry(nf, width=260)
         e_name.insert(0, rule.get('name', ''))
         e_name.pack(side='left', padx=4)
+
+        # Matris-rad (visas bara om regeln har atno/new_band)
+        def uses_clublog(conds):
+            return any(c.get('type') in ('atno', 'new_band') for c in conds)
+
+        cl_row = ctk.CTkFrame(dlg, fg_color='transparent')
+        cl_row.pack(fill='x', padx=12, pady=(0, 4))
+        lbl_cl = ctk.CTkLabel(cl_row, text='', text_color='gray', font=ctk.CTkFont(size=11))
+        lbl_cl.pack(side='left', padx=4)
+
+        def _update_cl_label():
+            if uses_clublog(working):
+                n = self._clublog.entity_count
+                ts = self._clublog.last_fetch.strftime('%H:%M') if self._clublog.last_fetch else '—'
+                lbl_cl.configure(text=f'Matris: {n} enheter  |  Uppdaterad {ts}')
+                btn_cl.pack(side='left', padx=4)
+            else:
+                lbl_cl.configure(text='')
+                btn_cl.pack_forget()
+
+        def _fetch_from_editor():
+            btn_cl.configure(state='disabled', text='Hämtar...')
+            self._fetch_clublog(on_done=lambda ok, msg: (
+                self.after(0, lambda: btn_cl.configure(state='normal', text='Uppdatera matris')),
+                self.after(0, _update_cl_label)
+            ))
+
+        btn_cl = ctk.CTkButton(cl_row, text='Uppdatera matris', width=140,
+                               command=_fetch_from_editor)
+        _update_cl_label()
 
         ctk.CTkLabel(dlg, text='Villkor  (AND — alla måste stämma):',
                      anchor='w').pack(fill='x', padx=12, pady=(4, 2))
@@ -854,9 +895,9 @@ class JTSpots(ctk.CTk):
                 rf.pack(fill='x')
                 for opt in grp:
                     v = ctk.BooleanVar(value=opt in selected_values)
-                    ctk.CTkCheckBox(rf, text=opt, variable=v, width=60,
-                                    checkbox_width=18, checkbox_height=18,
-                                    font=ctk.CTkFont(size=11)).pack(side='left', padx=2)
+                    ctk.CTkCheckBox(rf, text=opt, variable=v, width=52,
+                                    checkbox_width=16, checkbox_height=16,
+                                    font=ctk.CTkFont(size=10)).pack(side='left', padx=1)
                     vars_[opt] = v
             return lambda: ','.join(k for k, v in vars_.items() if v.get())
 
@@ -901,7 +942,7 @@ class JTSpots(ctk.CTk):
 
                 ctk.CTkButton(cond_frame, text='✕', width=32,
                               fg_color='#662222', hover_color='#882222',
-                              command=lambda c=cond: (working.remove(c), refresh())
+                              command=lambda c=cond: (working.remove(c), refresh(), _update_cl_label())
                               ).grid(row=i, column=2, padx=4, pady=4)
 
         refresh()
@@ -917,6 +958,7 @@ class JTSpots(ctk.CTk):
             key = next(k for k, v in COND_TYPES.items() if v == cond_var.get())
             working.append({'type': key, 'value': ''})
             refresh()
+            _update_cl_label()
 
         ctk.CTkButton(add_row, text='+ Lägg till', width=100, command=add_cond).pack(side='left')
 
@@ -1150,13 +1192,16 @@ class JTSpots(ctk.CTk):
 
     # ── Clublog ───────────────────────────────────────────────────────────────
 
-    def _fetch_clublog(self):
+    def _fetch_clublog(self, on_done=None):
         self._clublog.callsign = self._e_cl_call.get().strip()
         self._clublog.email    = self._e_cl_email.get().strip()
         self._clublog.password = self._e_cl_pass.get()
         self._clublog.api_key  = self._e_cl_api.get().strip()
-        self._lbl_cl_status.configure(text='Hämtar...', text_color='gray')
-        self._clublog.fetch_matrix(on_done=self._on_clublog_done)
+        def combined(ok, msg):
+            self._on_clublog_done(ok, msg)
+            if on_done:
+                on_done(ok, msg)
+        self._clublog.fetch_matrix(on_done=combined)
 
     def _on_clublog_done(self, ok, msg):
         self.after(0, lambda: self._log_line(f'Clublog: {msg}'))
