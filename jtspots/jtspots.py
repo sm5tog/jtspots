@@ -1852,6 +1852,11 @@ class JTSpots(ctk.CTk):
         se(self._e_cl_email, 'cl_email')
         se(self._e_cl_pass,  'cl_pass')
         se(self._e_cl_api,   'cl_api')
+        # Sätt Clublog-credentials direkt så get_dxcc fungerar utan manuell fetch
+        self._clublog.callsign = self._e_cl_call.get().strip()
+        self._clublog.email    = self._e_cl_email.get().strip()
+        self._clublog.password = self._e_cl_pass.get()
+        self._clublog.api_key  = self._e_cl_api.get().strip()
         if 'flt_cq'  in data: self._flt_cq.set(data['flt_cq'])
         if 'flt_buf' in data: self._flt_buf.set(data['flt_buf'])
         se(self._e_buf, 'buf_min')
