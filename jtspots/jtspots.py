@@ -895,8 +895,9 @@ class JTSpots(ctk.CTk):
                 rf.pack(fill='x')
                 for opt in grp:
                     v = ctk.BooleanVar(value=opt in selected_values)
-                    ctk.CTkCheckBox(rf, text=opt, variable=v, width=52,
-                                    checkbox_width=16, checkbox_height=16,
+                    ctk.CTkCheckBox(rf, text=opt, variable=v, width=46,
+                                    checkbox_width=14, checkbox_height=14,
+                                    corner_radius=2,
                                     font=ctk.CTkFont(size=10)).pack(side='left', padx=1)
                     vars_[opt] = v
             return lambda: ','.join(k for k, v in vars_.items() if v.get())
