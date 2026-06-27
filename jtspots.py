@@ -6,6 +6,7 @@ import socket
 import threading
 import re
 import json
+import time
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -129,16 +130,22 @@ def extract_cq_call(msg: str):
     m = _CQ_RE.match(msg.strip())
     return m.group(1).upper() if m else None
 
+# DX cluster spot format: "DX de SPOTTER:   FREQ  CALL  COMMENT  TIME"
+_SPOT_RE = re.compile(
+    r'^DX de\s+(\S+):\s+(\d+\.?\d*)\s+(\S+)\s+(.*?)\s+(\d{4}Z)\s*$',
+    re.IGNORECASE
+)
+
 
 # ── Clublog-klient ───────────────────────────────────────────────────────────
 
 class ClublogClient:
     MATRIX_URL = 'https://clublog.org/json_dxccchart.php'
-    DXCC_URL   = 'https://secure.clublog.org/dxcc'
+    DXCC_URL   = 'https://clublog.org/dxcc'
 
     def __init__(self):
-        self._matrix      = {}   # {adif_str: {band_str: status_int}}
-        self._dxcc_cache  = {}   # {callsign: adif_str}
+        self._matrix      = {}
+        self._dxcc_cache  = {}
         self._lock        = threading.Lock()
         self.api_key      = ''
         self.email        = ''
@@ -162,6 +169,7 @@ class ClublogClient:
             })
             url = f'{self.MATRIX_URL}?{params}'
             debug_url = re.sub(r'(password=)[^&]+', r'\1***', url)
+            debug_url = re.sub(r'(api=)[^&]+', r'\1***', debug_url)
             if on_done:
                 on_done(None, f'Anropar: {debug_url}')
             req = urllib.request.Request(url, headers={'User-Agent': 'JTSpots/1.0'})
@@ -188,11 +196,9 @@ class ClublogClient:
                 on_done(False, f'{type(e).__name__}: {e}')
 
     def get_dxcc(self, callsign: str) -> str:
-        """Returnerar ADIF-entitetsnummer som sträng, eller '' vid fel."""
         with self._lock:
             if callsign in self._dxcc_cache:
                 return self._dxcc_cache[callsign]
-
         try:
             params = urllib.parse.urlencode({'call': callsign, 'api': self.api_key})
             url = f'{self.DXCC_URL}?{params}'
@@ -205,26 +211,18 @@ class ClublogClient:
             return ''
 
     def is_needed(self, callsign: str, freq_khz: float) -> tuple:
-        """
-        Returnerar (behövs: bool, orsak: str).
-        Kräver att matrisen är hämtad.
-        """
         with self._lock:
             if not self._matrix:
-                return True, ''   # ingen matris = passa igenom
-
+                return True, ''
         adif = self.get_dxcc(callsign)
         if not adif:
             return True, '?DXCC'
-
         band = freq_to_band(freq_khz)
-
         with self._lock:
             if adif not in self._matrix:
                 return True, 'ATNO'
             if band and band not in self._matrix[adif]:
                 return True, f'Ny {band}m'
-
         return False, ''
 
     @property
@@ -233,7 +231,7 @@ class ClublogClient:
             return bool(self._matrix)
 
 
-# ── Telnet DX-cluster server ─────────────────────────────────────────────────
+# ── Telnet DX-cluster server (mot Log4OM) ────────────────────────────────────
 
 class SpotServer:
     def __init__(self, port):
@@ -319,38 +317,117 @@ class UDPListener:
         sock.close()
 
 
+# ── DX Cluster-klient (mot externa cluster) ───────────────────────────────────
+
+class ClusterClient:
+    def __init__(self, cfg: dict, on_spot, on_status):
+        self._cfg       = cfg        # {name, host, port, callsign, password, init}
+        self._on_spot   = on_spot    # callback(line: str)
+        self._on_status = on_status  # callback(name: str, connected: bool, msg: str)
+        self._running   = False
+        self._connected = False
+
+    @property
+    def name(self):
+        return self._cfg.get('name', '?')
+
+    @property
+    def connected(self):
+        return self._connected
+
+    def connect(self):
+        self._running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def disconnect(self):
+        self._running = False
+
+    def _run(self):
+        host = self._cfg.get('host', '')
+        port = int(self._cfg.get('port', 7373))
+        call = self._cfg.get('callsign', '')
+        pwd  = self._cfg.get('password', '')
+        init = self._cfg.get('init', '<CALLSIGN>')
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)
+            sock.connect((host, port))
+            self._connected = True
+            self._on_status(self.name, True, f'Ansluten till {host}:{port}')
+
+            for cmd in init.splitlines():
+                cmd = cmd.strip()
+                if not cmd or cmd.startswith('//'):
+                    continue
+                if cmd == '<DELAY>':
+                    time.sleep(1)
+                    continue
+                cmd = cmd.replace('<CALLSIGN>', call).replace('<PASSWORD>', pwd)
+                sock.sendall((cmd + '\r\n').encode())
+                time.sleep(0.3)
+
+            buf = ''
+            sock.settimeout(1.0)
+            while self._running:
+                try:
+                    data = sock.recv(2048).decode('utf-8', errors='replace')
+                    if not data:
+                        break
+                    buf += data
+                    while '\n' in buf:
+                        line, buf = buf.split('\n', 1)
+                        line = line.strip('\r\n ')
+                        if line:
+                            self._on_spot(line)
+                except socket.timeout:
+                    pass
+        except Exception as e:
+            self._on_status(self.name, False, f'Fel: {e}')
+        finally:
+            self._connected = False
+            self._on_status(self.name, False, f'Frånkopplad från {host}')
+            try: sock.close()
+            except Exception: pass
+
+
 # ── Huvud-GUI ────────────────────────────────────────────────────────────────
+
+DEFAULT_INIT = '<CALLSIGN>\n<PASSWORD>\nSH/DX 30'
 
 class JTSpots(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title('JTSpots')
-        self.geometry('660x780')
+        self.geometry('720x820')
         self.resizable(True, True)
         ctk.set_appearance_mode('dark')
         ctk.set_default_color_theme('blue')
 
-        self._freq_hz    = 0
-        self._running    = False
-        self._udp        = None
-        self._telnet     = None
-        self._spot_count = 0
-        self._clublog    = ClublogClient()
+        self._freq_hz       = 0
+        self._running       = False
+        self._udp           = None
+        self._telnet        = None
+        self._spot_count    = 0
+        self._clublog       = ClublogClient()
+        self._clusters      = []    # list of ClusterClient
+        self._cluster_cfgs  = []    # list of dicts (sparade servrar)
+        self._selected_idx  = None  # vald server i listan
 
         self._build_ui()
         self._load_settings()
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self.after(2000, self._tick)
-        self.after(100, self._start)   # autostart
+        self.after(100, self._start)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        p = {'padx': 10, 'pady': 5}
+        p = {'padx': 10, 'pady': 4}
 
         # Statusrad
         top = ctk.CTkFrame(self)
-        top.pack(fill='x', **p)
+        top.pack(fill='x', padx=10, pady=(8, 4))
         self._dot = ctk.CTkLabel(top, text='●', text_color='gray', font=('', 20))
         self._dot.pack(side='left', padx=(6, 2))
         self._lbl_status = ctk.CTkLabel(top, text='Startar...')
@@ -360,62 +437,18 @@ class JTSpots(ctk.CTk):
         self._btn = ctk.CTkButton(top, text='Stoppa', width=90, command=self._toggle)
         self._btn.pack(side='right', padx=6)
 
-        # Anslutningsinställningar
-        sf = ctk.CTkFrame(self)
-        sf.pack(fill='x', **p)
-        ctk.CTkLabel(sf, text='Anslutning',
-                     font=ctk.CTkFont(weight='bold')).grid(
-            row=0, column=0, columnspan=4, sticky='w', padx=8, pady=(6, 2))
+        # Flikar
+        tabs = ctk.CTkTabview(self)
+        tabs.pack(fill='x', **p)
+        for t in ('WSJT-X', 'DX Cluster', 'Clublog', 'Filter'):
+            tabs.add(t)
 
-        self._mk_label(sf, 'Multicast IP:', 1, 0)
-        self._e_mcast = self._mk_entry(sf, DEFAULT_MCAST, 1, 1, 140)
-        self._mk_label(sf, 'UDP-port:', 1, 2)
-        self._e_uport = self._mk_entry(sf, str(DEFAULT_UPORT), 1, 3, 70)
+        self._build_wsjtx_tab(tabs.tab('WSJT-X'))
+        self._build_cluster_tab(tabs.tab('DX Cluster'))
+        self._build_clublog_tab(tabs.tab('Clublog'))
+        self._build_filter_tab(tabs.tab('Filter'))
 
-        self._mk_label(sf, 'Telnet-port:', 2, 0)
-        self._e_tport = self._mk_entry(sf, str(DEFAULT_TPORT), 2, 1, 70)
-        self._mk_label(sf, 'Mitt callsign:', 2, 2)
-        self._e_call = self._mk_entry(sf, 'SM5TOG', 2, 3, 100)
-
-        # Clublog
-        cf = ctk.CTkFrame(self)
-        cf.pack(fill='x', **p)
-        ctk.CTkLabel(cf, text='Clublog',
-                     font=ctk.CTkFont(weight='bold')).grid(
-            row=0, column=0, columnspan=4, sticky='w', padx=8, pady=(6, 2))
-
-        self._mk_label(cf, 'E-post:', 1, 0)
-        self._e_cl_email = self._mk_entry(cf, '', 1, 1, 200)
-
-        self._mk_label(cf, 'Lösenord:', 2, 0)
-        self._e_cl_pass = ctk.CTkEntry(cf, width=200, show='*')
-        self._e_cl_pass.grid(row=2, column=1, sticky='w', padx=4, pady=3)
-
-        self._mk_label(cf, 'API-nyckel:', 3, 0)
-        self._e_cl_api = ctk.CTkEntry(cf, width=200, show='*')
-        self._e_cl_api.grid(row=3, column=1, sticky='w', padx=4, pady=3)
-
-        btn_row = ctk.CTkFrame(cf, fg_color='transparent')
-        btn_row.grid(row=4, column=0, columnspan=4, sticky='w', padx=6, pady=(2, 6))
-        ctk.CTkButton(btn_row, text='Hämta matris', width=120,
-                      command=self._fetch_clublog).pack(side='left', padx=4)
-        self._lbl_cl_status = ctk.CTkLabel(btn_row, text='Ingen matris hämtad',
-                                           text_color='gray')
-        self._lbl_cl_status.pack(side='left', padx=8)
-
-        # Filter
-        ff = ctk.CTkFrame(self)
-        ff.pack(fill='x', **p)
-        ctk.CTkLabel(ff, text='Filter',
-                     font=ctk.CTkFont(weight='bold')).grid(
-            row=0, column=0, columnspan=4, sticky='w', padx=8, pady=(6, 2))
-
-        self._flt_cq      = self._mk_chk(ff, 'Bara CQ-anrop',           1, 0, True)
-        self._flt_snr     = self._mk_chk(ff, 'Min SNR (dB):',            2, 0, False)
-        self._e_snr       = self._mk_entry(ff, '-15', 2, 1, 55)
-        self._flt_clublog = self._mk_chk(ff, 'Bara behövda (Clublog)',   3, 0, False)
-
-        # Spotlogg
+        # Spotlogg (alltid synlig)
         lf = ctk.CTkFrame(self)
         lf.pack(fill='both', expand=True, **p)
         hdr = ctk.CTkFrame(lf, fg_color='transparent')
@@ -426,10 +459,106 @@ class JTSpots(ctk.CTk):
         self._lbl_count.pack(side='left', padx=4)
         ctk.CTkButton(hdr, text='Rensa', width=70,
                       command=self._clear_log).pack(side='right', padx=8, pady=4)
-
         self._log = ctk.CTkTextbox(lf, font=('Courier', 11), state='disabled')
         self._log.pack(fill='both', expand=True, padx=8, pady=(0, 8))
-        self._log._textbox.tag_config('alert', foreground='#ffcc00')
+        self._log._textbox.tag_config('alert',   foreground='#ffcc00')
+        self._log._textbox.tag_config('cluster', foreground='#88ccff')
+
+    def _build_wsjtx_tab(self, tab):
+        self._mk_label(tab, 'Multicast IP:', 0, 0)
+        self._e_mcast = self._mk_entry(tab, DEFAULT_MCAST, 0, 1, 140)
+        self._mk_label(tab, 'UDP-port:', 0, 2)
+        self._e_uport = self._mk_entry(tab, str(DEFAULT_UPORT), 0, 3, 70)
+
+        self._mk_label(tab, 'Telnet-port:', 1, 0)
+        self._e_tport = self._mk_entry(tab, str(DEFAULT_TPORT), 1, 1, 70)
+        self._mk_label(tab, 'Mitt callsign:', 1, 2)
+        self._e_call = self._mk_entry(tab, 'SM5K', 1, 3, 100)
+
+    def _build_cluster_tab(self, tab):
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=2)
+
+        # Vänster — serverlista
+        left = ctk.CTkFrame(tab)
+        left.grid(row=0, column=0, sticky='nsew', padx=(0, 6), pady=4)
+
+        ctk.CTkLabel(left, text='Sparade servrar',
+                     font=ctk.CTkFont(weight='bold')).pack(anchor='w', padx=6, pady=(6, 2))
+
+        self._cluster_list = ctk.CTkScrollableFrame(left, height=160)
+        self._cluster_list.pack(fill='both', expand=True, padx=4)
+
+        btns = ctk.CTkFrame(left, fg_color='transparent')
+        btns.pack(fill='x', padx=4, pady=4)
+        ctk.CTkButton(btns, text='+', width=36,
+                      command=self._cluster_new).pack(side='left', padx=2)
+        ctk.CTkButton(btns, text='−', width=36,
+                      command=self._cluster_del).pack(side='left', padx=2)
+        self._btn_connect = ctk.CTkButton(btns, text='Koppla', width=80,
+                                          command=self._cluster_toggle)
+        self._btn_connect.pack(side='right', padx=2)
+
+        # Höger — formulär
+        right = ctk.CTkFrame(tab)
+        right.grid(row=0, column=1, sticky='nsew', pady=4)
+
+        ctk.CTkLabel(right, text='Serverinformation',
+                     font=ctk.CTkFont(weight='bold')).grid(
+            row=0, column=0, columnspan=2, sticky='w', padx=8, pady=(6, 2))
+
+        fields = [('Namn:', 'name', 1), ('Host:', 'host', 2),
+                  ('Port:', 'port', 3), ('Callsign:', 'callsign', 4),
+                  ('Lösenord:', 'password', 5)]
+        self._cl_entries = {}
+        for label, key, row in fields:
+            self._mk_label(right, label, row, 0)
+            show = '*' if key == 'password' else ''
+            e = ctk.CTkEntry(right, width=180, show=show)
+            e.grid(row=row, column=1, sticky='w', padx=4, pady=2)
+            self._cl_entries[key] = e
+
+        self._mk_label(right, 'Init-kommandon:', 6, 0)
+        self._cl_init = ctk.CTkTextbox(right, width=180, height=80, font=('Courier', 11))
+        self._cl_init.grid(row=6, column=1, sticky='w', padx=4, pady=2)
+        self._cl_init.insert('end', DEFAULT_INIT)
+
+        ctk.CTkButton(right, text='Spara server', width=120,
+                      command=self._cluster_save).grid(
+            row=7, column=1, sticky='e', padx=4, pady=6)
+
+        self._refresh_cluster_list()
+
+    def _build_clublog_tab(self, tab):
+        self._mk_label(tab, 'Callsign:', 0, 0)
+        self._e_cl_call = self._mk_entry(tab, 'SM5K', 0, 1, 160)
+
+        self._mk_label(tab, 'E-post:', 1, 0)
+        self._e_cl_email = self._mk_entry(tab, '', 1, 1, 200)
+
+        self._mk_label(tab, 'Lösenord:', 2, 0)
+        self._e_cl_pass = ctk.CTkEntry(tab, width=200, show='*')
+        self._e_cl_pass.grid(row=2, column=1, sticky='w', padx=4, pady=3)
+
+        self._mk_label(tab, 'API-nyckel:', 3, 0)
+        self._e_cl_api = ctk.CTkEntry(tab, width=200, show='*')
+        self._e_cl_api.grid(row=3, column=1, sticky='w', padx=4, pady=3)
+
+        br = ctk.CTkFrame(tab, fg_color='transparent')
+        br.grid(row=4, column=0, columnspan=3, sticky='w', padx=4, pady=(4, 6))
+        ctk.CTkButton(br, text='Hämta matris', width=120,
+                      command=self._fetch_clublog).pack(side='left', padx=4)
+        self._lbl_cl_status = ctk.CTkLabel(br, text='Ingen matris hämtad',
+                                            text_color='gray')
+        self._lbl_cl_status.pack(side='left', padx=8)
+
+    def _build_filter_tab(self, tab):
+        self._flt_cq      = self._mk_chk(tab, 'Bara CQ-anrop (WSJT-X)',    0, 0, True)
+        self._flt_snr     = self._mk_chk(tab, 'Min SNR (dB):',               1, 0, False)
+        self._e_snr       = self._mk_entry(tab, '-15', 1, 1, 55)
+        self._flt_clublog = self._mk_chk(tab, 'Bara behövda (Clublog)',      2, 0, False)
+
+    # ── Hjälpwidgets ──────────────────────────────────────────────────────────
 
     def _mk_label(self, parent, text, row, col):
         ctk.CTkLabel(parent, text=text).grid(
@@ -444,14 +573,16 @@ class JTSpots(ctk.CTk):
     def _mk_chk(self, parent, text, row, col, default):
         var = ctk.BooleanVar(value=default)
         ctk.CTkCheckBox(parent, text=text, variable=var).grid(
-            row=row, column=col, sticky='w', padx=8, pady=3)
+            row=row, column=col, sticky='w', padx=8, pady=4)
         return var
 
-    # ── Start / Stop ──────────────────────────────────────────────────────────
+    # ── Start / Stop (WSJT-X + Telnet-server) ────────────────────────────────
 
     def _on_close(self):
         self._save_settings()
         self._stop()
+        for c in self._clusters:
+            c.disconnect()
         self.destroy()
 
     def _toggle(self):
@@ -491,13 +622,117 @@ class JTSpots(ctk.CTk):
         self._btn.configure(text='Starta')
         self._log_line('=== Stoppad ===')
 
+    # ── DX Cluster-hantering ──────────────────────────────────────────────────
+
+    def _refresh_cluster_list(self):
+        for w in self._cluster_list.winfo_children():
+            w.destroy()
+        for i, cfg in enumerate(self._cluster_cfgs):
+            connected = any(c.name == cfg['name'] and c.connected
+                            for c in self._clusters)
+            dot   = '●' if connected else '○'
+            color = '#00cc44' if connected else 'gray'
+            row   = ctk.CTkFrame(self._cluster_list, fg_color='transparent')
+            row.pack(fill='x', pady=1)
+            ctk.CTkLabel(row, text=dot, text_color=color, width=16).pack(side='left')
+            ctk.CTkButton(row, text=cfg['name'], anchor='w',
+                          fg_color='transparent', hover_color=('#3a3a3a', '#3a3a3a'),
+                          command=lambda idx=i: self._cluster_select(idx)).pack(
+                side='left', fill='x', expand=True)
+
+    def _cluster_select(self, idx):
+        self._selected_idx = idx
+        cfg = self._cluster_cfgs[idx]
+        for key, e in self._cl_entries.items():
+            e.delete(0, 'end')
+            e.insert(0, str(cfg.get(key, '')))
+        self._cl_init.delete('1.0', 'end')
+        self._cl_init.insert('end', cfg.get('init', DEFAULT_INIT))
+        connected = any(c.name == cfg['name'] and c.connected for c in self._clusters)
+        self._btn_connect.configure(text='Koppla ned' if connected else 'Koppla upp')
+
+    def _cluster_new(self):
+        self._cluster_cfgs.append({
+            'name': 'Ny server', 'host': '', 'port': '7373',
+            'callsign': self._e_call.get(), 'password': '',
+            'init': DEFAULT_INIT,
+        })
+        self._refresh_cluster_list()
+        self._cluster_select(len(self._cluster_cfgs) - 1)
+
+    def _cluster_del(self):
+        if self._selected_idx is None:
+            return
+        cfg = self._cluster_cfgs[self._selected_idx]
+        for c in list(self._clusters):
+            if c.name == cfg['name']:
+                c.disconnect()
+                self._clusters.remove(c)
+        self._cluster_cfgs.pop(self._selected_idx)
+        self._selected_idx = None
+        self._refresh_cluster_list()
+
+    def _cluster_save(self):
+        cfg = {key: e.get() for key, e in self._cl_entries.items()}
+        cfg['init'] = self._cl_init.get('1.0', 'end').strip()
+        if self._selected_idx is None:
+            self._cluster_cfgs.append(cfg)
+        else:
+            self._cluster_cfgs[self._selected_idx] = cfg
+        self._refresh_cluster_list()
+
+    def _cluster_toggle(self):
+        if self._selected_idx is None:
+            return
+        cfg = self._cluster_cfgs[self._selected_idx]
+        existing = next((c for c in self._clusters if c.name == cfg['name']), None)
+        if existing and existing.connected:
+            existing.disconnect()
+            self._clusters.remove(existing)
+            self._btn_connect.configure(text='Koppla upp')
+        else:
+            self._cluster_save()
+            cfg = self._cluster_cfgs[self._selected_idx]
+            client = ClusterClient(cfg, self._on_cluster_line, self._on_cluster_status)
+            self._clusters.append(client)
+            client.connect()
+            self._btn_connect.configure(text='Koppla ned')
+
+    def _on_cluster_status(self, name, connected, msg):
+        self.after(0, lambda: self._log_line(f'[{name}] {msg}'))
+        self.after(0, self._refresh_cluster_list)
+        if self._selected_idx is not None:
+            cfg = self._cluster_cfgs[self._selected_idx]
+            if cfg.get('name') == name:
+                self.after(0, lambda: self._btn_connect.configure(
+                    text='Koppla ned' if connected else 'Koppla upp'))
+
+    def _on_cluster_line(self, line):
+        m = _SPOT_RE.match(line)
+        if m:
+            _spotter, freq_str, call, comment, utc = m.groups()
+            try:
+                freq_khz = float(freq_str)
+            except ValueError:
+                return
+            if self._flt_clublog.get():
+                needed, _ = self._clublog.is_needed(call, freq_khz)
+                if not needed:
+                    return
+            if self._telnet:
+                self._telnet.send_spot(line)
+            self._spot_count += 1
+            self.after(0, lambda l=line: self._log_line(l, tag='cluster'))
+        else:
+            self.after(0, lambda l=line: self._log_line(f'  {l}'))
+
     # ── Clublog ───────────────────────────────────────────────────────────────
 
     def _fetch_clublog(self):
+        self._clublog.callsign = self._e_cl_call.get().strip()
         self._clublog.email    = self._e_cl_email.get().strip()
+        self._clublog.password = self._e_cl_pass.get()
         self._clublog.api_key  = self._e_cl_api.get().strip()
-        self._clublog.password  = self._e_cl_pass.get()
-        self._clublog.callsign  = self._e_call.get().strip()
         self._lbl_cl_status.configure(text='Hämtar...', text_color='gray')
         self._clublog.fetch_matrix(on_done=self._on_clublog_done)
 
@@ -508,7 +743,7 @@ class JTSpots(ctk.CTk):
         color = '#00cc44' if ok else '#cc4444'
         self.after(0, lambda: self._lbl_cl_status.configure(text=msg, text_color=color))
 
-    # ── Pakethantering ────────────────────────────────────────────────────────
+    # ── WSJT-X pakethantering ─────────────────────────────────────────────────
 
     def _on_packet(self, data):
         pkt = parse_packet(data)
@@ -552,18 +787,19 @@ class JTSpots(ctk.CTk):
     def _emit_spot(self, call, freq_khz, snr, mode, reason=''):
         if not mode or mode == '~':
             mode = mode_from_freq(freq_khz)
-        de  = self._e_call.get().strip() or 'JTSpots'
-        utc = datetime.now(timezone.utc).strftime('%H%MZ')
+        de      = self._e_call.get().strip() or 'JTSpots'
+        utc     = datetime.now(timezone.utc).strftime('%H%MZ')
         comment = f'{mode} {snr:+d}dB'
         if reason:
             comment += f' [{reason}]'
         line = (f'DX de {de + ":":<11}{freq_khz:>9.1f}  {call:<13} '
                 f'{comment:<20} {utc}')
-        self._telnet.send_spot(line)
+        if self._telnet:
+            self._telnet.send_spot(line)
         self._spot_count += 1
         self.after(0, lambda l=line, r=reason: self._log_line(l, alert=bool(r)))
 
-    # ── Hjälpfunktioner ───────────────────────────────────────────────────────
+    # ── Logg + tick ───────────────────────────────────────────────────────────
 
     def _tick(self):
         if self._running and self._telnet:
@@ -573,15 +809,14 @@ class JTSpots(ctk.CTk):
         self._lbl_count.configure(text=f'{self._spot_count} spots')
         self.after(2000, self._tick)
 
-    def _log_line(self, text, alert=False):
+    def _log_line(self, text, alert=False, tag=None):
         ts = datetime.now().strftime('%H:%M:%S')
         self._log.configure(state='normal')
-        line = f'{ts}  {text}\n'
-        self._log.insert('end', line)
-        if alert:
+        self._log.insert('end', f'{ts}  {text}\n')
+        if alert or tag:
+            t   = tag if tag else 'alert'
             end = self._log._textbox.index('end-1c')
-            start = f'{end} linestart'
-            self._log._textbox.tag_add('alert', start, end)
+            self._log._textbox.tag_add(t, f'{end} linestart', end)
         self._log.see('end')
         self._log.configure(state='disabled')
 
@@ -591,19 +826,23 @@ class JTSpots(ctk.CTk):
         self._log.configure(state='disabled')
         self._spot_count = 0
 
+    # ── Spara / ladda inställningar ───────────────────────────────────────────
+
     def _save_settings(self):
         data = {
-            'mcast':    self._e_mcast.get(),
-            'uport':    self._e_uport.get(),
-            'tport':    self._e_tport.get(),
-            'callsign': self._e_call.get(),
-            'cl_email': self._e_cl_email.get(),
-            'cl_pass':  self._e_cl_pass.get(),
-            'cl_api':   self._e_cl_api.get(),
-            'flt_cq':   self._flt_cq.get(),
-            'flt_snr':  self._flt_snr.get(),
-            'snr':      self._e_snr.get(),
+            'mcast':       self._e_mcast.get(),
+            'uport':       self._e_uport.get(),
+            'tport':       self._e_tport.get(),
+            'callsign':    self._e_call.get(),
+            'cl_call':     self._e_cl_call.get(),
+            'cl_email':    self._e_cl_email.get(),
+            'cl_pass':     self._e_cl_pass.get(),
+            'cl_api':      self._e_cl_api.get(),
+            'flt_cq':      self._flt_cq.get(),
+            'flt_snr':     self._flt_snr.get(),
+            'snr':         self._e_snr.get(),
             'flt_clublog': self._flt_clublog.get(),
+            'clusters':    self._cluster_cfgs,
         }
         try:
             SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding='utf-8')
@@ -615,21 +854,27 @@ class JTSpots(ctk.CTk):
             data = json.loads(SETTINGS_FILE.read_text(encoding='utf-8'))
         except Exception:
             return
-        def set_entry(e, key):
+
+        def se(e, key):
             if key in data:
                 e.delete(0, 'end')
                 e.insert(0, data[key])
-        set_entry(self._e_mcast,    'mcast')
-        set_entry(self._e_uport,    'uport')
-        set_entry(self._e_tport,    'tport')
-        set_entry(self._e_call,     'callsign')
-        set_entry(self._e_cl_email, 'cl_email')
-        set_entry(self._e_cl_pass,  'cl_pass')
-        set_entry(self._e_cl_api,   'cl_api')
-        set_entry(self._e_snr,      'snr')
+
+        se(self._e_mcast,    'mcast')
+        se(self._e_uport,    'uport')
+        se(self._e_tport,    'tport')
+        se(self._e_call,     'callsign')
+        se(self._e_cl_call,  'cl_call')
+        se(self._e_cl_email, 'cl_email')
+        se(self._e_cl_pass,  'cl_pass')
+        se(self._e_cl_api,   'cl_api')
+        se(self._e_snr,      'snr')
         if 'flt_cq'      in data: self._flt_cq.set(data['flt_cq'])
         if 'flt_snr'     in data: self._flt_snr.set(data['flt_snr'])
         if 'flt_clublog' in data: self._flt_clublog.set(data['flt_clublog'])
+        if 'clusters'    in data:
+            self._cluster_cfgs = data['clusters']
+            self._refresh_cluster_list()
 
 
 # ── Start ─────────────────────────────────────────────────────────────────────
