@@ -1608,22 +1608,38 @@ class JTSpots(ctk.CTk):
         self._append_to_box(self._log, text, tag)
 
     def _rerender_filtered(self):
+        # Debounce: cancel previous pending re-render
+        if hasattr(self, '_rerender_after'):
+            self.after_cancel(self._rerender_after)
+        self._rerender_after = self.after(50, self._rerender_filtered_bg)
+
+    def _rerender_filtered_bg(self):
+        snap = list(self._spot_log)
+        rules = list(self._rules)
+        ts = datetime.now().strftime('%H:%M:%S')
+
+        def _work():
+            results = []
+            for s in snap:
+                passed, rule_name = self._engine.evaluate(
+                    s['call'], s['freq_khz'], s['snr'], s['mode'], rules,
+                    s.get('source', ''), s.get('spotter', ''))
+                if passed:
+                    suffix = f' [{rule_name}]' if rule_name else ''
+                    results.append((f'{ts}  {s["line"]}{suffix}\n', s.get('source', '')))
+            self.after(0, lambda: self._rerender_filtered_apply(results))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _rerender_filtered_apply(self, results):
         box = self._log_flt
         box.configure(state='normal')
         box.delete('1.0', 'end')
-        ts = datetime.now().strftime('%H:%M:%S')
-        for s in self._spot_log:
-            passed, rule_name = self._engine.evaluate(
-                s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules,
-                s.get('source',''), s.get('spotter',''))
-            if passed:
-                suffix = f' [{rule_name}]' if rule_name else ''
-                line = f'{ts}  {s["line"]}{suffix}\n'
-                end = box._textbox.index('end-1c')
-                box._textbox.insert('end', line)
-                tag = s.get('source', '')
-                if tag:
-                    box._textbox.tag_add(tag, f'{end} linestart', f'{end} lineend')
+        for line, tag in results:
+            end = box._textbox.index('end-1c')
+            box._textbox.insert('end', line)
+            if tag:
+                box._textbox.tag_add(tag, f'{end} linestart', f'{end} lineend')
         box._textbox.see('end')
         box.configure(state='disabled')
 
