@@ -511,13 +511,14 @@ class RuleEngine:
         self._exp_log = exp_log
 
     def evaluate(self, call, freq_khz, snr, mode, rules, source='', spotter=''):
-        """Returns (passed, rule_name). If no active rules: pass all."""
+        """Returns (passed, rule_names). If no active rules: pass all."""
         active = [r for r in rules if r.get('enabled', True)]
         if not active:
             return True, ''
-        for rule in active:
-            if self._matches(rule, call, freq_khz, snr, mode, source, spotter):
-                return True, rule.get('name', '')
+        matched = [r.get('name', '') for r in active
+                   if self._matches(r, call, freq_khz, snr, mode, source, spotter)]
+        if matched:
+            return True, ', '.join(n for n in matched if n)
         return False, ''
 
     def _matches(self, rule, call, freq_khz, snr, mode, source, spotter):
