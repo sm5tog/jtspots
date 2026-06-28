@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """JTSpots — JTAlert/WSJT-X → Log4OM DX-spot bridge med Clublog-filter."""
+__version__ = '1.1.0'
 
 import struct
 import socket
@@ -796,7 +797,7 @@ DEFAULT_INIT = '<CALLSIGN>\n<PASSWORD>\nSH/DX 30'
 class JTSpots(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title('JTSpots')
+        self.title(f'JTSpots v{__version__}')
         self.geometry('720x820')
         self.resizable(True, True)
         ctk.set_appearance_mode('dark')
@@ -809,6 +810,7 @@ class JTSpots(ctk.CTk):
         self._rules         = []
         self._spot_count    = 0
         self._spot_log      = []   # [{call, freq_khz, snr, mode, line, source}]
+        self._filtered_log  = []   # senaste 30 filtrerade spot-rader (str)
         self._clublog       = ClublogClient()
         self._buffer        = SpotBuffer()
         self._exp_log       = ExpeditionLog()
@@ -1372,16 +1374,11 @@ class JTSpots(ctk.CTk):
                 client.connect()
 
     def _on_telnet_connect(self, conn):
-        recent = self._spot_log[-30:]
-        for s in recent:
-            passed, rule_name = self._engine.evaluate(
-                s['call'], s['freq_khz'], s['snr'], s['mode'], self._rules,
-                s.get('source', ''), s.get('spotter', ''))
-            if passed:
-                try:
-                    conn.sendall((s['line'] + '\r\n').encode())
-                except Exception:
-                    break
+        for line in list(self._filtered_log):
+            try:
+                conn.sendall((line + '\r\n').encode())
+            except Exception:
+                break
 
     def _stop(self):
         if self._udp:            self._udp.stop()
@@ -1500,24 +1497,42 @@ class JTSpots(ctk.CTk):
                    f'{call:<13} {comment:<20} {utc}')
             spot = {'call': call, 'freq_khz': freq_khz, 'snr': -99,
                     'mode': mode_cl, 'line': out, 'source': 'cluster',
-                    'spotter': spotter_call}
-            self._spot_log.append(spot)
-            if len(self._spot_log) > 1000:
-                self._spot_log.pop(0)
-            passed, rule_name = self._engine.evaluate(call, freq_khz, -99, mode_cl, self._rules, 'cluster', spotter_call)
-            if passed and self._telnet:
-                cl_comment = f'{rule_name} {comment}' if rule_name else comment
-                cl_out = (f'DX de {spotter_call+":":<11}{freq_khz:>9.1f}  '
-                          f'{call:<13} {cl_comment:<20} {utc}')
-                self._telnet.send_spot(cl_out)
-            self._spot_count += 1
-            self.after(0, lambda l=out: self._log_line(l, tag='cluster'))
-            if passed:
-                suffix = f' [{rule_name}]' if rule_name else ''
-                self.after(0, lambda l=out, s=suffix: self._append_to_box(
-                    self._log_flt, l + s, tag='rule' if s else 'cluster'))
+                    'spotter': spotter_call, 'comment': comment, 'utc': utc}
+            self.after(0, lambda s=spot: self._ingest_cluster_spot(s))
         else:
             self.after(0, lambda l=line: self._log_line(f'  {l}'))
+
+    def _ingest_cluster_spot(self, spot):
+        self._spot_log.append(spot)
+        if len(self._spot_log) > 1000:
+            self._spot_log.pop(0)
+        self._spot_count += 1
+        self._log_line(spot['line'], tag='cluster')
+
+        rules = list(self._rules)
+        def _eval():
+            passed, rule_name = self._engine.evaluate(
+                spot['call'], spot['freq_khz'], spot['snr'], spot['mode'],
+                rules, 'cluster', spot.get('spotter', ''))
+            if passed:
+                self.after(0, lambda: self._emit_cluster_filtered(spot, rule_name))
+        threading.Thread(target=_eval, daemon=True).start()
+
+    def _emit_cluster_filtered(self, spot, rule_name):
+        spotter_call = spot.get('spotter', '')
+        comment = spot.get('comment', '')
+        utc = spot.get('utc', '')
+        cl_comment = f'{rule_name} {comment}' if rule_name else comment
+        cl_out = (f'DX de {spotter_call+":":<11}{spot["freq_khz"]:>9.1f}  '
+                  f'{spot["call"]:<13} {cl_comment:<20} {utc}')
+        if self._telnet:
+            self._telnet.send_spot(cl_out)
+        self._filtered_log.append(cl_out)
+        if len(self._filtered_log) > 30:
+            self._filtered_log.pop(0)
+        suffix = f' [{rule_name}]' if rule_name else ''
+        self._append_to_box(self._log_flt, spot['line'] + suffix,
+                            tag='rule' if suffix else 'cluster')
 
     # ── Clublog ───────────────────────────────────────────────────────────────
 
@@ -1673,6 +1688,9 @@ class JTSpots(ctk.CTk):
                 f'{comment:<20} {utc}')
         if self._telnet:
             self._telnet.send_spot(line)
+        self._filtered_log.append(line)
+        if len(self._filtered_log) > 30:
+            self._filtered_log.pop(0)
         suffix = f' [{rule_name}]' if rule_name else ''
         self._append_to_box(self._log_flt, line + suffix, tag='wsjt')
 
