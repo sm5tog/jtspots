@@ -87,23 +87,24 @@ def _make_session():
     return s
 
 
-def http_get(url, binary=False):
+def http_get(url, binary=False, timeout=None):
+    t = timeout or HTTP_TIMEOUT
     global _dxworld_session
     try:
         import requests
         if "dx-world.net" in url:
             if _dxworld_session is None:
                 _dxworld_session = _make_session()
-            resp = _dxworld_session.get(url, timeout=HTTP_TIMEOUT)
+            resp = _dxworld_session.get(url, timeout=t)
             resp.raise_for_status()
         else:
-            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=HTTP_TIMEOUT)
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=t)
             resp.raise_for_status()
         return resp.content if binary else resp.text
     except ImportError:
         pass
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+    with urllib.request.urlopen(req, timeout=t) as r:
         data = r.read()
     if binary:
         return data
@@ -657,13 +658,18 @@ def fetch_dx_news(on_progress=None, on_done=None):
         # DX-World Timeline
         _prog("Hämtar DX-World Timeline...")
         try:
-            html = http_get(URL_DXWORLD_TIMELINE, binary=False)
+            html = http_get(URL_DXWORLD_TIMELINE, binary=False, timeout=60)
             c, s = _extract_dxworld_timeline(html, ws, we)
             union |= c; specials |= s
-            _prog(f"DX-World Timeline: {len(c)} union, {len(s)} special")
+            msg = f"Timeline: {len(c)} union"
+            if len(c) == 0:
+                msg += " (0 — parsing misslyckades?)"
+            _prog(msg)
+            errors.append(msg) if len(c) == 0 else None
         except Exception as e:
-            errors.append(f"DX-World Timeline: {e}")
-            _prog(f"DX-World Timeline fel: {e}")
+            short = str(e)[:80]
+            errors.append(f"Timeline: {short}")
+            _prog(f"Timeline fel: {short}")
 
         specials -= union
         err_msg = "; ".join(errors) if errors else None
