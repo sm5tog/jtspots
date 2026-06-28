@@ -16,6 +16,7 @@ DXWORLD_BASE_DATE   = datetime(2026, 5, 30)
 DXWORLD_URL         = "https://www.dx-world.net/wp-content/uploads/{year}/{month:02d}/DX_{num}.pdf"
 URL_425             = "https://www.425dxn.org/wcalpdf.php"
 URL_NG3K            = "https://www.ng3k.com/Misc/adxo.html"
+URL_DXWORLD_TIMELINE = "https://www.hamradiotimeline.com/timeline/dxw_timeline_1_1.php"
 
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -67,8 +68,6 @@ _dxworld_session = None
 
 
 HTTP_TIMEOUT = 15  # sekunder per anrop
-
-_dxworld_blocked = False  # sätt True om DX-World blockerar i denna session
 
 
 def _make_session():
@@ -470,12 +469,19 @@ def _extract_dxworld(text, ws, we):
 # ── DX-World PDF-hämtning ─────────────────────────────────────────────────────
 
 def _dxworld_fetch():
+    import time
+    global _dxworld_session
+
     today = datetime.now()
     weeks_diff = (today - DXWORLD_BASE_DATE).days // 7
     base_num = DXWORLD_BASE_NUMBER + weeks_diff
+
     attempts = []
+    attempts.append((base_num, today.year, today.month))
     for no in (0, -1, 1, -2, 2):
         for mo in (0, -1, 1):
+            if no == 0 and mo == 0:
+                continue
             num = base_num + no
             year, month = today.year, today.month + mo
             if month < 1:
@@ -487,26 +493,105 @@ def _dxworld_fetch():
     for a in attempts:
         if a not in seen:
             seen.add(a); unique.append(a)
-    import time
-    global _dxworld_blocked
+
+    try:
+        import requests
+        HTTPError_r = requests.exceptions.HTTPError
+    except ImportError:
+        HTTPError_r = None
+
+    def _is_404(exc):
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+            return True
+        if HTTPError_r and isinstance(exc, HTTPError_r):
+            resp = getattr(exc, "response", None)
+            return resp is not None and resp.status_code == 404
+        return False
+
+    def _is_403(exc):
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
+            return True
+        if HTTPError_r and isinstance(exc, HTTPError_r):
+            resp = getattr(exc, "response", None)
+            return resp is not None and resp.status_code == 403
+        return False
+
     for num, year, month in unique:
-        if _dxworld_blocked:
-            break
         url = DXWORLD_URL.format(year=year, month=month, num=num)
-        try:
-            data = http_get(url, binary=True)
-            if data[:4] == b"%PDF":
-                return data
-        except urllib.error.HTTPError as e:
-            if e.code in (403, 429):
-                _dxworld_blocked = True
-                break
-            if e.code == 404:
-                continue
-            time.sleep(2)
-        except Exception:
-            time.sleep(2)
+        for attempt in range(3):
+            try:
+                data = http_get(url, binary=True)
+                if data[:4] == b"%PDF":
+                    return data
+                break  # 200 men ej PDF — prova nästa URL
+            except Exception as e:
+                if _is_404(e):
+                    break  # filen finns inte — nästa URL
+                if _is_403(e):
+                    _dxworld_session = None  # ny session vid bot-skydd
+                    if attempt < 2:
+                        time.sleep(3)
+                        continue
+                    break
+                if attempt < 2:
+                    time.sleep(2)
     return None
+
+
+# ── DX-World Timeline-extraktion ──────────────────────────────────────────────
+
+def _extract_dxworld_timeline(html, ws, we):
+    calls, specials = set(), set()
+    month_map = {
+        'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+        'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+    }
+    month_m = re.search(r'content="DX-World\.net - ([A-Z]+) Featured', html)
+    month_str = month_m.group(1)[:3] if month_m else None
+    month_num = month_map.get(month_str)
+    if not month_num:
+        return calls, specials
+    year = datetime.now().year
+
+    labels_m = re.search(r"var labels\s*=\s*\[([^\]]+)\]", html)
+    if not labels_m:
+        return calls, specials
+    labels = re.findall(r"'([^']*)'", labels_m.group(1))
+
+    data_m = re.search(r'data\s*=\s*\[(.*?)\];', html, re.DOTALL)
+    if not data_m:
+        return calls, specials
+    rows = re.findall(r'\[\[([^\]]*)\],\[([^\]]*)\]\]', data_m.group(1))
+
+    bars = []
+    for a, b in rows:
+        for item in [a, b]:
+            parts = item.split(',')
+            try:
+                start = int(parts[0].strip())
+            except (ValueError, IndexError):
+                start = None
+            try:
+                dur = int(parts[1].strip())
+            except (ValueError, IndexError):
+                dur = None
+            bars.append((start, dur))
+
+    for label, (start, dur) in zip(labels, bars):
+        if not label or start is None or dur is None:
+            continue
+        try:
+            start_date = datetime(year, month_num, start + 1)
+            end_date = start_date + timedelta(days=dur - 1)
+        except ValueError:
+            continue
+        if not _in_window(start_date, end_date, ws, we):
+            continue
+        raw_call = label.split(' ')[0].split('-')[0].strip().upper()
+        if raw_call:
+            _process_call(raw_call, False, calls, specials)
+
+    return calls, specials
 
 
 # ── Publik API ────────────────────────────────────────────────────────────────
@@ -518,8 +603,6 @@ def fetch_dx_news(on_progress=None, on_done=None):
     on_done(union_calls, special_calls, error_msg): resultat
     """
     def _run():
-        global _dxworld_blocked
-        _dxworld_blocked = False
         today    = datetime.now()
         ws       = today
         we       = today + timedelta(days=WINDOW_DAYS)
@@ -570,6 +653,17 @@ def fetch_dx_news(on_progress=None, on_done=None):
         except Exception as e:
             errors.append(f"NG3K: {e}")
             _prog(f"NG3K fel: {e}")
+
+        # DX-World Timeline
+        _prog("Hämtar DX-World Timeline...")
+        try:
+            html = http_get(URL_DXWORLD_TIMELINE, binary=False)
+            c, s = _extract_dxworld_timeline(html, ws, we)
+            union |= c; specials |= s
+            _prog(f"DX-World Timeline: {len(c)} union, {len(s)} special")
+        except Exception as e:
+            errors.append(f"DX-World Timeline: {e}")
+            _prog(f"DX-World Timeline fel: {e}")
 
         specials -= union
         err_msg = "; ".join(errors) if errors else None
